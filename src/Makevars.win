@@ -1,0 +1,4 @@
+## Windows compile flags. Same rationale as src/Makevars:
+## no machine-specific or IEEE-violating flags.
+
+PKG_FFLAGS = -O2

@@ -1,0 +1,7 @@
+## Portable compile flags for cpmnet Fortran sources.
+## CRAN policy requires no machine-specific flags (e.g. -march=native)
+## and no flags that violate IEEE semantics (e.g. -ffast-math). The
+## numerical safety guards in the .f90 sources depend on standard
+## IEEE arithmetic; do not add -ffast-math here.
+
+PKG_FFLAGS = $(FPIC) -O2

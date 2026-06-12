@@ -1,0 +1,29 @@
+Package: cpmnet
+Title: Penalized Cumulative Probability Models with Elastic Net
+Version: 1.0.0
+Authors@R: c(
+    person("Xuduo", "Wen", role = c("aut", "cre"),
+           email = "wenv@usc.edu"))
+Description: Fits cumulative probability models (CPMs) with elastic net
+    penalization or regularization via block coordinate descent, computed
+    along a full penalization path. Supports k-fold cross-validation for lambda
+    selection under four criteria: the Brier score over a grid of
+    response percentiles (default and recommended), mean and median
+    regression loss, and pinball quantile loss, with probability
+    scoring rules also available. The core fitting loop is implemented
+    in Fortran for speed.
+Depends: R (>= 3.5.0)
+Imports:
+    rms,
+    MASS,
+    PAmeasures,
+    parallel
+Suggests:
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
+License: GPL (>= 2)
+Encoding: UTF-8
+NeedsCompilation: yes
+URL: https://github.com/xuduovictorwen/cpmnet
+BugReports: https://github.com/xuduovictorwen/cpmnet/issues
+RoxygenNote: 7.3.3
