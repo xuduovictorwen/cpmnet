@@ -63,76 +63,53 @@ print.cv.cpmnet <- function(x, ...) {
   cat("\nCall: ", deparse(x$call), "\n\n")
   if (x$type %in% c("mean", "median")) {
     cat("Measure: Mean Absolute Error \n\n")
-    cat(sprintf("%5s %7s %5s %7s %7s %7s\n", "", "Lambda", "Index", "Measure", "SE", "Nonzero"))
-    cat(sprintf("%5s %7.5f %5d %7.3f %7.5f %7d\n",
-                "min", x$lambda.min.mae, x$index["min", "MAE"],
-                x$cvm.mae[x$index["min", "MAE"]], x$cvsd.mae[x$index["min", "MAE"]],
-                x$nzero[x$index["min", "MAE"]]))
-    cat(sprintf("%5s %7.5f %5d %7.3f %7.5f %7d\n",
-                "1se", x$lambda.1se.mae, x$index["1se", "MAE"],
-                x$cvm.mae[x$index["1se", "MAE"]], x$cvsd.mae[x$index["1se", "MAE"]],
-                x$nzero[x$index["1se", "MAE"]]))
+    .print_cv_rows(c("min", "1se"),
+                   c(x$lambda.min.mae, x$lambda.1se.mae),
+                   x$index[, "MAE"], x$cvm.mae, x$cvsd.mae, x$nzero, "%7.3f")
     cat("\nMeasure: Mean-Squared Error \n\n")
-    cat(sprintf("%5s %7s %5s %7s %7s %7s\n", "", "Lambda", "Index", "Measure", "SE", "Nonzero"))
-    cat(sprintf("%5s %7.5f %5d %7.3f %7.5f %7d\n",
-                "min", x$lambda.min.mse, x$index["min", "MSE"],
-                x$cvm.mse[x$index["min", "MSE"]], x$cvsd.mse[x$index["min", "MSE"]],
-                x$nzero[x$index["min", "MSE"]]))
-    cat(sprintf("%5s %7.5f %5d %7.3f %7.5f %7d\n",
-                "1se", x$lambda.1se.mse, x$index["1se", "MSE"],
-                x$cvm.mse[x$index["1se", "MSE"]], x$cvsd.mse[x$index["1se", "MSE"]],
-                x$nzero[x$index["1se", "MSE"]]))
+    .print_cv_rows(c("min", "1se"),
+                   c(x$lambda.min.mse, x$lambda.1se.mse),
+                   x$index[, "MSE"], x$cvm.mse, x$cvsd.mse, x$nzero, "%7.3f")
     if (x$type == "mean" && !is.na(x$lambda.max.pR2)) {
       cat("\nMeasure: pR2 (PA precision * PA accuracy) \n\n")
-      cat(sprintf("%5s %7s %5s %7s %7s %7s\n", "", "Lambda", "Index", "Measure", "SE", "Nonzero"))
-      cat(sprintf("%5s %7.5f %5d %7.4f %7.5f %7d\n",
-                  "max", x$lambda.max.pR2, x$index["min", "pR2"],
-                  x$cvm.pR2[x$index["min", "pR2"]], x$cvsd.pR2[x$index["min", "pR2"]],
-                  x$nzero[x$index["min", "pR2"]]))
-      cat(sprintf("%5s %7.5f %5d %7.4f %7.5f %7d\n",
-                  "1se", x$lambda.1se.pR2, x$index["1se", "pR2"],
-                  x$cvm.pR2[x$index["1se", "pR2"]], x$cvsd.pR2[x$index["1se", "pR2"]],
-                  x$nzero[x$index["1se", "pR2"]]))
+      .print_cv_rows(c("max", "1se"),
+                     c(x$lambda.max.pR2, x$lambda.1se.pR2),
+                     x$index[, "pR2"], x$cvm.pR2, x$cvsd.pR2, x$nzero)
     }
-  } else if (x$type %in% c("pinball_abs", "pinball_sq")) {
-    label <- if (x$type == "pinball_abs") "Pinball Loss (Absolute)" else "Pinball Loss (Squared)"
-    cat(sprintf("Measure: %s\n", label))
-    cat(sprintf("  tau levels: %s\n\n", paste(x$tau_levels, collapse = ", ")))
-    cat(sprintf("%5s %7s %5s %7s %7s %7s\n", "", "Lambda", "Index", "Measure", "SE", "Nonzero"))
-    cat(sprintf("%5s %7.5f %5d %7.4f %7.5f %7d\n",
-                "min", x$lambda.min, x$index["min", 1],
-                x$cvm[x$index["min", 1]], x$cvsd[x$index["min", 1]],
-                x$nzero[x$index["min", 1]]))
-    cat(sprintf("%5s %7.5f %5d %7.4f %7.5f %7d\n",
-                "1se", x$lambda.1se, x$index["1se", 1],
-                x$cvm[x$index["1se", 1]], x$cvsd[x$index["1se", 1]],
-                x$nzero[x$index["1se", 1]]))
-  } else if (x$type %in% c("psr_abs", "psr_sq")) {
-    label <- if (x$type == "psr_abs") "PSR (Absolute)" else "PSR (Squared)"
-    cat(sprintf("Measure: %s\n\n", label))
-    cat(sprintf("%5s %7s %5s %7s %7s %7s\n", "", "Lambda", "Index", "Measure", "SE", "Nonzero"))
-    cat(sprintf("%5s %7.5f %5d %7.4f %7.5f %7d\n",
-                "min", x$lambda.min, x$index["min", 1],
-                x$cvm[x$index["min", 1]], x$cvsd[x$index["min", 1]],
-                x$nzero[x$index["min", 1]]))
-    cat(sprintf("%5s %7.5f %5d %7.4f %7.5f %7d\n",
-                "1se", x$lambda.1se, x$index["1se", 1],
-                x$cvm[x$index["1se", 1]], x$cvsd[x$index["1se", 1]],
-                x$nzero[x$index["1se", 1]]))
   } else {
-    cat("Measure: Brier Score\n")
-    cat(sprintf("  thresholds (percentiles): %s\n", paste(x$brier_probs, collapse = ", ")))
-    cat(sprintf("  threshold values: %s\n\n", paste(round(x$brier_cuts, 4), collapse = ", ")))
-    cat(sprintf("%5s %7s %5s %7s %7s %7s\n", "", "Lambda", "Index", "Measure", "SE", "Nonzero"))
-    cat(sprintf("%5s %7.5f %5d %7.4f %7.5f %7d\n",
-                "min", x$lambda.min, x$index["min", 1],
-                x$cvm[x$index["min", 1]], x$cvsd[x$index["min", 1]],
-                x$nzero[x$index["min", 1]]))
-    cat(sprintf("%5s %7.5f %5d %7.4f %7.5f %7d\n",
-                "1se", x$lambda.1se, x$index["1se", 1],
-                x$cvm[x$index["1se", 1]], x$cvsd[x$index["1se", 1]],
-                x$nzero[x$index["1se", 1]]))
+    header <- switch(x$type,
+      pinball_abs = "Measure: Pinball Loss (Absolute)\n",
+      pinball_sq  = "Measure: Pinball Loss (Squared)\n",
+      loglik      = "Measure: Negative Log-Likelihood (held-out)\n\n",
+      psr_abs     = "Measure: PSR (Absolute)\n\n",
+      psr_sq      = "Measure: PSR (Squared)\n\n",
+      brier       = "Measure: Brier Score\n")
+    cat(header)
+    if (x$type %in% c("pinball_abs", "pinball_sq")) {
+      cat(sprintf("  tau levels: %s\n\n", paste(x$tau_levels, collapse = ", ")))
+    } else if (x$type == "brier") {
+      cat(sprintf("  thresholds (percentiles): %s\n", paste(x$brier_probs, collapse = ", ")))
+      cat(sprintf("  threshold values: %s\n\n", paste(round(x$brier_cuts, 4), collapse = ", ")))
+    }
+    .print_cv_rows(c("min", "1se"), c(x$lambda.min, x$lambda.1se),
+                   x$index[, 1], x$cvm, x$cvsd, x$nzero)
   }
   cat("\n")
   invisible(x)
+}
+
+# Two-row lambda-selection table shared by the print.cv.cpmnet branches.
+# idx holds the (min/opt, 1se) lambda indices; measure_fmt controls the
+# Measure column format (mean/median print %7.3f).
+#' @keywords internal
+#' @noRd
+.print_cv_rows <- function(labels, lambdas, idx, cvm, cvsd, nzero,
+                           measure_fmt = "%7.4f") {
+  cat(sprintf("%5s %7s %5s %7s %7s %7s\n",
+              "", "Lambda", "Index", "Measure", "SE", "Nonzero"))
+  row_fmt <- paste0("%5s %7.5f %5d ", measure_fmt, " %7.5f %7d\n")
+  for (r in 1:2) {
+    cat(sprintf(row_fmt, labels[r], lambdas[r], idx[r],
+                cvm[idx[r]], cvsd[idx[r]], nzero[idx[r]]))
+  }
 }

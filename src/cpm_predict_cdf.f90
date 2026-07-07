@@ -1,4 +1,8 @@
-! gfortran -shared -fPIC -O2 -o cpm_predict_cdf.so cpm_predict_cdf.f90
+! Conditional CDF at user thresholds: F(c | x_i) as a step function over
+! the training support y_mapping. One shared body for all five links; the
+! per-link CDF formula lives in link_cdf below. Every link must return
+! P(Y <= u_j) = 1 - G(alpha_j + x'beta), the same orientation for all
+! five (loglog and cloglog need their complements for this).
 subroutine cpm_predict_cdf(n, p, k, newx, alpha, beta, y_mapping, &
                            link_type, thresholds, n_thresh, cdf_out, &
                            n_lambda)
@@ -11,177 +15,64 @@ subroutine cpm_predict_cdf(n, p, k, newx, alpha, beta, y_mapping, &
   double precision, intent(in) :: thresholds(n_thresh)
   double precision, intent(out) :: cdf_out(n, n_lambda, n_thresh)
   integer :: i, j, l, t, idx
-  double precision :: eta, xb, c_val
+  double precision :: xb, c_val
   double precision, parameter :: inv_sqrt2 = 0.7071067811865475d0
   double precision, parameter :: inv_pi = 0.31830988618379067154d0
   double precision :: xb_vec(n)
   double precision :: cdf_array(k)
   cdf_out = 0.0d0
-  select case(link_type)
-  case(1) ! logistic
-    do l = 1, n_lambda
-      xb_vec = matmul(newx, beta(:, l))
-      do i = 1, n
-        xb = xb_vec(i)
-        do j = 1, k
-          eta = alpha(j, l) + xb
-          cdf_array(j) = 1.0d0 - 1.0d0 / (1.0d0 + exp(-eta))
-        end do
-        do t = 1, n_thresh
-          c_val = thresholds(t)
-          if (c_val < y_mapping(1)) then
-            cdf_out(i, l, t) = 0.0d0
-          else if (c_val >= y_mapping(k+1)) then
-            cdf_out(i, l, t) = 1.0d0
-          else
-            idx = k
-            do j = k, 1, -1
-              if (y_mapping(j) <= c_val) then
-                idx = j
-                exit
-              end if
-              idx = j - 1
-            end do
-            if (idx < 1) then
-              cdf_out(i, l, t) = 0.0d0
-            else
-              cdf_out(i, l, t) = cdf_array(idx)
+  do l = 1, n_lambda
+    xb_vec = matmul(newx, beta(:, l))
+    do i = 1, n
+      xb = xb_vec(i)
+      do j = 1, k
+        cdf_array(j) = link_cdf(alpha(j, l) + xb)
+      end do
+      do t = 1, n_thresh
+        c_val = thresholds(t)
+        if (c_val < y_mapping(1)) then
+          cdf_out(i, l, t) = 0.0d0
+        else if (c_val >= y_mapping(k+1)) then
+          cdf_out(i, l, t) = 1.0d0
+        else
+          idx = k
+          do j = k, 1, -1
+            if (y_mapping(j) <= c_val) then
+              idx = j
+              exit
             end if
+            idx = j - 1
+          end do
+          if (idx < 1) then
+            cdf_out(i, l, t) = 0.0d0
+          else
+            cdf_out(i, l, t) = cdf_array(idx)
           end if
-        end do
+        end if
       end do
     end do
-  case(2) ! probit
-    do l = 1, n_lambda
-      xb_vec = matmul(newx, beta(:, l))
-      do i = 1, n
-        xb = xb_vec(i)
-        do j = 1, k
-          eta = alpha(j, l) + xb
-          cdf_array(j) = 1.0d0 - 0.5d0 * (1.0d0 + erf(eta * inv_sqrt2))
-        end do
-        do t = 1, n_thresh
-          c_val = thresholds(t)
-          if (c_val < y_mapping(1)) then
-            cdf_out(i, l, t) = 0.0d0
-          else if (c_val >= y_mapping(k+1)) then
-            cdf_out(i, l, t) = 1.0d0
-          else
-            idx = k
-            do j = k, 1, -1
-              if (y_mapping(j) <= c_val) then
-                idx = j
-                exit
-              end if
-              idx = j - 1
-            end do
-            if (idx < 1) then
-              cdf_out(i, l, t) = 0.0d0
-            else
-              cdf_out(i, l, t) = cdf_array(idx)
-            end if
-          end if
-        end do
-      end do
-    end do
-  case(3) ! log-log
-    do l = 1, n_lambda
-      xb_vec = matmul(newx, beta(:, l))
-      do i = 1, n
-        xb = xb_vec(i)
-        do j = 1, k
-          eta = alpha(j, l) + xb
-          cdf_array(j) = 1.0d0 - exp(-exp(-eta))   ! 1-F = P(Y<=c) [loglog]
-        end do
-        do t = 1, n_thresh
-          c_val = thresholds(t)
-          if (c_val < y_mapping(1)) then
-            cdf_out(i, l, t) = 0.0d0
-          else if (c_val >= y_mapping(k+1)) then
-            cdf_out(i, l, t) = 1.0d0
-          else
-            idx = k
-            do j = k, 1, -1
-              if (y_mapping(j) <= c_val) then
-                idx = j
-                exit
-              end if
-              idx = j - 1
-            end do
-            if (idx < 1) then
-              cdf_out(i, l, t) = 0.0d0
-            else
-              cdf_out(i, l, t) = cdf_array(idx)
-            end if
-          end if
-        end do
-      end do
-    end do
-  case(4) ! complementary log-log
-    do l = 1, n_lambda
-      xb_vec = matmul(newx, beta(:, l))
-      do i = 1, n
-        xb = xb_vec(i)
-        do j = 1, k
-          eta = alpha(j, l) + xb
-          cdf_array(j) = exp(-exp(eta))   ! 1-F = P(Y<=c) [cloglog]
-        end do
-        do t = 1, n_thresh
-          c_val = thresholds(t)
-          if (c_val < y_mapping(1)) then
-            cdf_out(i, l, t) = 0.0d0
-          else if (c_val >= y_mapping(k+1)) then
-            cdf_out(i, l, t) = 1.0d0
-          else
-            idx = k
-            do j = k, 1, -1
-              if (y_mapping(j) <= c_val) then
-                idx = j
-                exit
-              end if
-              idx = j - 1
-            end do
-            if (idx < 1) then
-              cdf_out(i, l, t) = 0.0d0
-            else
-              cdf_out(i, l, t) = cdf_array(idx)
-            end if
-          end if
-        end do
-      end do
-    end do
-  case(5) ! cauchit
-    do l = 1, n_lambda
-      xb_vec = matmul(newx, beta(:, l))
-      do i = 1, n
-        xb = xb_vec(i)
-        do j = 1, k
-          eta = alpha(j, l) + xb
-          cdf_array(j) = 0.5d0 - atan(eta) * inv_pi
-        end do
-        do t = 1, n_thresh
-          c_val = thresholds(t)
-          if (c_val < y_mapping(1)) then
-            cdf_out(i, l, t) = 0.0d0
-          else if (c_val >= y_mapping(k+1)) then
-            cdf_out(i, l, t) = 1.0d0
-          else
-            idx = k
-            do j = k, 1, -1
-              if (y_mapping(j) <= c_val) then
-                idx = j
-                exit
-              end if
-              idx = j - 1
-            end do
-            if (idx < 1) then
-              cdf_out(i, l, t) = 0.0d0
-            else
-              cdf_out(i, l, t) = cdf_array(idx)
-            end if
-          end if
-        end do
-      end do
-    end do
-  end select
+  end do
+
+contains
+
+  ! P(Y <= u_j | x) for eta = alpha_j + x'beta, by link.
+  pure function link_cdf(eta) result(c)
+    double precision, intent(in) :: eta
+    double precision :: c
+    select case(link_type)
+    case(1) ! logistic
+      c = 1.0d0 - 1.0d0 / (1.0d0 + exp(-eta))
+    case(2) ! probit
+      c = 1.0d0 - 0.5d0 * (1.0d0 + erf(eta * inv_sqrt2))
+    case(3) ! log-log
+      c = 1.0d0 - exp(-exp(-eta))   ! 1-F = P(Y<=c) [loglog]
+    case(4) ! complementary log-log
+      c = exp(-exp(eta))   ! 1-F = P(Y<=c) [cloglog]
+    case(5) ! cauchit
+      c = 0.5d0 - atan(eta) * inv_pi
+    case default
+      c = 0.0d0
+    end select
+  end function link_cdf
+
 end subroutine cpm_predict_cdf

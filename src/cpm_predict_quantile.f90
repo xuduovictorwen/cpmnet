@@ -1,4 +1,7 @@
-! gfortran -shared -fPIC -O2 -o cpm_predict_quantile.so cpm_predict_quantile.f90
+! Conditional quantiles at user tau levels from the fitted CPM. One
+! shared body for all five links; the per-link CDF formula lives in
+! link_cdf below. Quantile lookup mirrors the median rule in
+! cpm_predict (midpoint at an exact tie within tol).
 subroutine cpm_predict_quantile(n, p, k, newx, alpha, beta, y_mapping, &
                                 link_type, tau_levels, n_tau, predictions, &
                                 n_lambda, tol)
@@ -12,137 +15,56 @@ subroutine cpm_predict_quantile(n, p, k, newx, alpha, beta, y_mapping, &
   double precision, intent(in) :: tol
   double precision, intent(out) :: predictions(n, n_lambda, n_tau)
   integer :: i, j, l, t, q_idx
-  double precision :: eta, xb, tau
+  double precision :: xb, tau
   double precision, parameter :: inv_sqrt2 = 0.7071067811865475d0
   double precision, parameter :: inv_pi = 0.31830988618379067154d0
   double precision :: xb_vec(n)
   double precision :: cdf_array(k+1)
   predictions = 0.0d0
-  select case(link_type)
-  case(1) ! logistic
-    do l = 1, n_lambda
-      xb_vec = matmul(newx, beta(:, l))
-      do i = 1, n
-        xb = xb_vec(i)
+  do l = 1, n_lambda
+    xb_vec = matmul(newx, beta(:, l))
+    do i = 1, n
+      xb = xb_vec(i)
+      do j = 1, k
+        cdf_array(j) = link_cdf(alpha(j, l) + xb)
+      end do
+      cdf_array(k+1) = 1.0d0
+      do t = 1, n_tau
+        tau = tau_levels(t)
+        q_idx = 1
         do j = 1, k
-          eta = alpha(j, l) + xb
-          cdf_array(j) = 1.0d0 - 1.0d0 / (1.0d0 + exp(-eta))
+          if (cdf_array(j) >= tau) exit
+          q_idx = j + 1
         end do
-        cdf_array(k+1) = 1.0d0
-        do t = 1, n_tau
-          tau = tau_levels(t)
-          q_idx = 1
-          do j = 1, k
-            if (cdf_array(j) >= tau) exit
-            q_idx = j + 1
-          end do
-          if (q_idx <= k .and. abs(cdf_array(q_idx) - tau) < tol) then
-            predictions(i, l, t) = (y_mapping(q_idx) + y_mapping(q_idx + 1)) * 0.5d0
-          else
-            predictions(i, l, t) = y_mapping(q_idx)
-          end if
-        end do
+        if (q_idx <= k .and. abs(cdf_array(q_idx) - tau) < tol) then
+          predictions(i, l, t) = (y_mapping(q_idx) + y_mapping(q_idx + 1)) * 0.5d0
+        else
+          predictions(i, l, t) = y_mapping(q_idx)
+        end if
       end do
     end do
-  case(2) ! probit
-    do l = 1, n_lambda
-      xb_vec = matmul(newx, beta(:, l))
-      do i = 1, n
-        xb = xb_vec(i)
-        do j = 1, k
-          eta = alpha(j, l) + xb
-          cdf_array(j) = 1.0d0 - 0.5d0 * (1.0d0 + erf(eta * inv_sqrt2))
-        end do
-        cdf_array(k+1) = 1.0d0
-        do t = 1, n_tau
-          tau = tau_levels(t)
-          q_idx = 1
-          do j = 1, k
-            if (cdf_array(j) >= tau) exit
-            q_idx = j + 1
-          end do
-          if (q_idx <= k .and. abs(cdf_array(q_idx) - tau) < tol) then
-            predictions(i, l, t) = (y_mapping(q_idx) + y_mapping(q_idx + 1)) * 0.5d0
-          else
-            predictions(i, l, t) = y_mapping(q_idx)
-          end if
-        end do
-      end do
-    end do
-  case(3) ! log-log
-    do l = 1, n_lambda
-      xb_vec = matmul(newx, beta(:, l))
-      do i = 1, n
-        xb = xb_vec(i)
-        do j = 1, k
-          eta = alpha(j, l) + xb
-          cdf_array(j) = 1.0d0 - exp(-exp(-eta))   ! 1-F = P(Y<=c) [loglog]
-        end do
-        cdf_array(k+1) = 1.0d0
-        do t = 1, n_tau
-          tau = tau_levels(t)
-          q_idx = 1
-          do j = 1, k
-            if (cdf_array(j) >= tau) exit
-            q_idx = j + 1
-          end do
-          if (q_idx <= k .and. abs(cdf_array(q_idx) - tau) < tol) then
-            predictions(i, l, t) = (y_mapping(q_idx) + y_mapping(q_idx + 1)) * 0.5d0
-          else
-            predictions(i, l, t) = y_mapping(q_idx)
-          end if
-        end do
-      end do
-    end do
-  case(4) ! complementary log-log
-    do l = 1, n_lambda
-      xb_vec = matmul(newx, beta(:, l))
-      do i = 1, n
-        xb = xb_vec(i)
-        do j = 1, k
-          eta = alpha(j, l) + xb
-          cdf_array(j) = exp(-exp(eta))   ! 1-F = P(Y<=c) [cloglog]
-        end do
-        cdf_array(k+1) = 1.0d0
-        do t = 1, n_tau
-          tau = tau_levels(t)
-          q_idx = 1
-          do j = 1, k
-            if (cdf_array(j) >= tau) exit
-            q_idx = j + 1
-          end do
-          if (q_idx <= k .and. abs(cdf_array(q_idx) - tau) < tol) then
-            predictions(i, l, t) = (y_mapping(q_idx) + y_mapping(q_idx + 1)) * 0.5d0
-          else
-            predictions(i, l, t) = y_mapping(q_idx)
-          end if
-        end do
-      end do
-    end do
-  case(5) ! cauchit
-    do l = 1, n_lambda
-      xb_vec = matmul(newx, beta(:, l))
-      do i = 1, n
-        xb = xb_vec(i)
-        do j = 1, k
-          eta = alpha(j, l) + xb
-          cdf_array(j) = 0.5d0 - atan(eta) * inv_pi
-        end do
-        cdf_array(k+1) = 1.0d0
-        do t = 1, n_tau
-          tau = tau_levels(t)
-          q_idx = 1
-          do j = 1, k
-            if (cdf_array(j) >= tau) exit
-            q_idx = j + 1
-          end do
-          if (q_idx <= k .and. abs(cdf_array(q_idx) - tau) < tol) then
-            predictions(i, l, t) = (y_mapping(q_idx) + y_mapping(q_idx + 1)) * 0.5d0
-          else
-            predictions(i, l, t) = y_mapping(q_idx)
-          end if
-        end do
-      end do
-    end do
-  end select
+  end do
+
+contains
+
+  ! P(Y <= u_j | x) for eta = alpha_j + x'beta, by link.
+  pure function link_cdf(eta) result(c)
+    double precision, intent(in) :: eta
+    double precision :: c
+    select case(link_type)
+    case(1) ! logistic
+      c = 1.0d0 - 1.0d0 / (1.0d0 + exp(-eta))
+    case(2) ! probit
+      c = 1.0d0 - 0.5d0 * (1.0d0 + erf(eta * inv_sqrt2))
+    case(3) ! log-log
+      c = 1.0d0 - exp(-exp(-eta))   ! 1-F = P(Y<=c) [loglog]
+    case(4) ! complementary log-log
+      c = exp(-exp(eta))   ! 1-F = P(Y<=c) [cloglog]
+    case(5) ! cauchit
+      c = 0.5d0 - atan(eta) * inv_pi
+    case default
+      c = 0.0d0
+    end select
+  end function link_cdf
+
 end subroutine cpm_predict_quantile

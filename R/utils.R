@@ -185,8 +185,7 @@ cpm_data_prep <- function(x, y, family, weights, standardize,
 
   list(x = x, y = y_int, wt = wt, n = n, p = p, k = k, link = link,
        alpha_init = alpha_init, beta_init = rep(0, p),
-       x_means = x_means, x_sds = x_sds, y_mapping = y_mapping,
-       offset = rep(0, n), penmat = matrix(0, p, p))
+       x_means = x_means, x_sds = x_sds, y_mapping = y_mapping)
 }
 
 #' @keywords internal

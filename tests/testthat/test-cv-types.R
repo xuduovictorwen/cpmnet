@@ -73,6 +73,47 @@ test_that("psr_sq returns psr structure", {
   expect_true(all(cv$cvm >= 0 & cv$cvm <= 1, na.rm = TRUE))
 })
 
+test_that("loglik returns expected structure", {
+  cv <- .run_cv("loglik")
+  expect_s3_class(cv, "cv.cpmnet")
+  expect_equal(cv$type, "loglik")
+  expect_true(is.finite(cv$lambda.min))
+  expect_true(is.finite(cv$lambda.1se))
+  # cvm is a negative mean log of category masses in (0, 1], so >= 0
+  expect_true(all(cv$cvm >= 0, na.rm = TRUE))
+})
+
+test_that("loglik category mass matches CDF differences and boundary clamps", {
+  fit <- cpmnet(.cv_dat$x, .cv_dat$y, family = "probit", nlambda = 5)
+  y_map <- fit$data_prep$y_mapping
+  k <- fit$data_prep$k
+  s <- fit$lambda[3]
+  newx <- .cv_dat$x[1:2, , drop = FALSE]
+  # y at interior training atoms: mass = F(u_j) - F(u_j-1)
+  jsel <- c(3L, 5L)
+  mass <- cpmnet:::predict_loglik_mass_cpmnet(fit, newx, y_map[jsel], s = s)
+  cdf <- cpmnet:::predict_cdf_cpmnet(fit, newx, s = s,
+                                     thresholds = y_map[1:k])
+  manual <- c(cdf[1, 1, jsel[1]] - cdf[1, 1, jsel[1] - 1L],
+              cdf[2, 1, jsel[2]] - cdf[2, 1, jsel[2] - 1L])
+  expect_equal(as.numeric(mass), manual, tolerance = 1e-12)
+  # below the support -> F(u_1); above -> 1 - F(u_k)
+  y_out <- c(min(y_map) - 1, max(y_map) + 1)
+  mass_out <- cpmnet:::predict_loglik_mass_cpmnet(fit, newx, y_out, s = s)
+  expect_equal(mass_out[1, 1], cdf[1, 1, 1], tolerance = 1e-12)
+  expect_equal(mass_out[2, 1], 1 - cdf[2, 1, k], tolerance = 1e-12)
+  # masses are probabilities
+  expect_true(all(mass > 0 & mass <= 1))
+  expect_true(all(mass_out > 0 & mass_out <= 1))
+})
+
+test_that("cv.cpmnet accepts verbose passed through to cpmnet", {
+  cv <- cv.cpmnet(.cv_dat$x, .cv_dat$y, nfolds = 3, nlambda = 8,
+                  parallel = FALSE, family = "probit", verbose = FALSE)
+  expect_s3_class(cv, "cv.cpmnet")
+  expect_true(is.finite(cv$lambda.min))
+})
+
 test_that("cpmnet.fit is attached and is a valid cpmnet object", {
   cv <- .run_cv("brier")
   expect_s3_class(cv$cpmnet.fit, "cpmnet")

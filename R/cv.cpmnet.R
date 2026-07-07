@@ -1,10 +1,11 @@
 #' Cross-validation for cpmnet
 #'
 #' Performs k-fold cross-validation for a \code{cpmnet} model and selects
-#' lambda according to one of four conceptual criteria: mean, median,
-#' pinball, or Brier. The default, \code{"brier"}, averages the squared
-#' Brier score across a user-specified grid of response percentiles and
-#' is the criterion recommended in the accompanying methods paper.
+#' lambda according to one of five conceptual criteria: mean, median,
+#' pinball, Brier, or held-out log-likelihood. The default, \code{"brier"},
+#' averages the squared Brier score across a user-specified grid of
+#' response percentiles and is the criterion recommended in the
+#' accompanying methods paper.
 #'
 #' @param x predictor matrix. See \code{\link{cpmnet}} for requirements.
 #' @param y response vector. See \code{\link{cpmnet}}.
@@ -14,12 +15,22 @@
 #'   \code{1:max(foldid)} with no gaps.
 #' @param type cross-validation loss. One of \code{"brier"} (default),
 #'   \code{"mean"}, \code{"median"}, \code{"pinball_abs"},
-#'   \code{"pinball_sq"}, \code{"psr_abs"}, \code{"psr_sq"}.
-#'   These map to four conceptual criteria emphasized in the paper:
+#'   \code{"pinball_sq"}, \code{"psr_abs"}, \code{"psr_sq"},
+#'   \code{"loglik"}.
+#'   These map to five conceptual criteria emphasized in the paper:
 #'   mean and median regression loss (with MAE/MSE/pR2 reported),
-#'   pinball quantile loss (absolute or squared variant), and the
-#'   Brier score. The \code{"psr_*"} options remain in the package
-#'   for completeness but are not part of the paper's primary set.
+#'   pinball quantile loss (absolute or squared variant), the
+#'   Brier score, and the held-out log-likelihood. The \code{"psr_*"}
+#'   options remain in the package for completeness but are not part
+#'   of the paper's primary set. \code{"loglik"} selects the lambda
+#'   that maximizes the mean held-out log-likelihood of the observed
+#'   outcome categories (the criterion \code{ordinalNet} calls
+#'   \code{cvLoglik}); \code{cvm} stores its negative so that
+#'   \code{lambda.min} keeps its usual minimizing meaning. A held-out
+#'   outcome outside the training support is assigned the boundary
+#'   category, following the same convention as the \code{"psr_*"}
+#'   criteria; category masses are floored at \code{1e-12} before the
+#'   log.
 #' @param parallel if \code{TRUE} (default), use \code{parallel::mclapply}.
 #'   Ignored on Windows with a warning.
 #' @param ncores number of cores. Defaults to
@@ -59,7 +70,7 @@
 #' @export
 cv.cpmnet <- function(x, y, nfolds = 10, foldid = NULL,
                       type = c("brier", "mean", "median", "pinball_abs",
-                               "pinball_sq", "psr_abs", "psr_sq"),
+                               "pinball_sq", "psr_abs", "psr_sq", "loglik"),
                       parallel = TRUE, ncores = NULL,
                       tau_levels = seq(0.1, 0.9, by = 0.1),
                       tau_weights = NULL,
@@ -119,78 +130,18 @@ cv.cpmnet <- function(x, y, nfolds = 10, foldid = NULL,
          call. = FALSE)
   }
 
-  # tau_levels (used by pinball types)
-  if (!is.numeric(tau_levels) || length(tau_levels) == 0L) {
-    stop("tau_levels must be a non-empty numeric vector; got ",
-         deparse(tau_levels), call. = FALSE)
-  }
-  if (any(!is.finite(tau_levels))) {
-    stop("tau_levels must contain no NA/NaN/Inf", call. = FALSE)
-  }
-  if (any(tau_levels <= 0) || any(tau_levels >= 1)) {
-    stop("tau_levels must lie strictly in (0, 1); got range [",
-         min(tau_levels), ", ", max(tau_levels), "]", call. = FALSE)
-  }
-  if (is.unsorted(tau_levels)) {
-    stop("tau_levels must be sorted in increasing order", call. = FALSE)
-  }
+  # probability grids + weights (pinball and brier types)
+  tau_weights <- .check_prob_grid(tau_levels, tau_weights,
+                                  "tau_levels", "tau_weights")
   n_tau <- length(tau_levels)
-  if (is.null(tau_weights)) {
-    tau_weights <- rep(1.0 / n_tau, n_tau)
-  } else {
-    if (!is.numeric(tau_weights) || length(tau_weights) != n_tau) {
-      stop("tau_weights must be numeric of length ", n_tau,
-           " (matching tau_levels); got length ", length(tau_weights),
-           call. = FALSE)
-    }
-    if (any(!is.finite(tau_weights)) || any(tau_weights < 0)) {
-      stop("tau_weights must be non-negative and finite", call. = FALSE)
-    }
-    if (abs(sum(tau_weights) - 1.0) > 1e-8) {
-      stop("tau_weights must sum to 1; got sum = ", sum(tau_weights),
-           call. = FALSE)
-    }
-  }
-
-  # brier_probs (used by brier type)
-  if (!is.numeric(brier_probs) || length(brier_probs) == 0L) {
-    stop("brier_probs must be a non-empty numeric vector; got ",
-         deparse(brier_probs), call. = FALSE)
-  }
-  if (any(!is.finite(brier_probs))) {
-    stop("brier_probs must contain no NA/NaN/Inf", call. = FALSE)
-  }
-  if (any(brier_probs <= 0) || any(brier_probs >= 1)) {
-    stop("brier_probs must lie strictly in (0, 1); got range [",
-         min(brier_probs), ", ", max(brier_probs), "]", call. = FALSE)
-  }
-  if (is.unsorted(brier_probs)) {
-    stop("brier_probs must be sorted in increasing order", call. = FALSE)
-  }
+  brier_weights <- .check_prob_grid(brier_probs, brier_weights,
+                                    "brier_probs", "brier_weights")
   n_brier <- length(brier_probs)
-  if (is.null(brier_weights)) {
-    brier_weights <- rep(1.0 / n_brier, n_brier)
-  } else {
-    if (!is.numeric(brier_weights) || length(brier_weights) != n_brier) {
-      stop("brier_weights must be numeric of length ", n_brier,
-           " (matching brier_probs); got length ", length(brier_weights),
-           call. = FALSE)
-    }
-    if (any(!is.finite(brier_weights)) || any(brier_weights < 0)) {
-      stop("brier_weights must be non-negative and finite", call. = FALSE)
-    }
-    if (abs(sum(brier_weights) - 1.0) > 1e-8) {
-      stop("brier_weights must sum to 1; got sum = ", sum(brier_weights),
-           call. = FALSE)
-    }
-  }
 
   dots <- list(...)
   fit_full <- do.call(cpmnet, c(list(x = x, y = y), dots))
   lambda_path <- fit_full$lambda
   nlambda <- length(lambda_path)
-  link_name <- names(rms::probabilityFamilies)[fit_full$data_prep$link]
-  cumprob <- eval(rms::probabilityFamilies[[link_name]][1])
   # brier thresholds from all y before splitting
   brier_cuts <- as.numeric(quantile(y, probs = brier_probs))
 
@@ -202,9 +153,10 @@ cv.cpmnet <- function(x, y, nfolds = 10, foldid = NULL,
     y_train <- y[train_idx]
     x_val <- x[val_idx, , drop = FALSE]
     y_val <- y[val_idx]
-    fit_fold <- do.call(cpmnet, c(list(x = x_train, y = y_train,
-                                       lambda = lambda_path,
-                                       verbose = FALSE), dots))
+    # fold fits are silent unless the caller passes verbose
+    fold_args <- c(list(x = x_train, y = y_train, lambda = lambda_path), dots)
+    if (is.null(fold_args$verbose)) fold_args$verbose <- FALSE
+    fit_fold <- do.call(cpmnet, fold_args)
     nlambda_fold <- length(fit_fold$lambda)
     if (type %in% c("mean", "median")) {
       # predict.cpmnet always returns a matrix n_val x nlambda_fold
@@ -255,6 +207,14 @@ cv.cpmnet <- function(x, y, nfolds = 10, foldid = NULL,
         brier[j] <- sum(brier_weights * bs_c)
       }
       list(brier = brier)
+    } else if (type == "loglik") {
+      mass <- predict_loglik_mass_cpmnet(fit_fold, newx = x_val,
+                                         y_test = y_val, s = NULL)
+      negll <- rep(NA_real_, nlambda)
+      for (j in 1:nlambda_fold) {
+        negll[j] <- -mean(log(pmax(mass[, j], 1e-12)))
+      }
+      list(negll = negll)
     } else {
       # psr_abs or psr_sq
       cdf_vals <- predict_psr_cpmnet(fit_fold, newx = x_val,
@@ -291,144 +251,145 @@ cv.cpmnet <- function(x, y, nfolds = 10, foldid = NULL,
   }
   if (length(fold_results) == 0) stop("All folds failed.", call. = FALSE)
   nfolds_actual <- length(fold_results)
+  cv_call <- match.call()
   if (type %in% c("mean", "median")) {
-    fold_mae <- do.call(rbind, lapply(fold_results, `[[`, "mae"))
-    fold_mse <- do.call(rbind, lapply(fold_results, `[[`, "mse"))
-    fold_pR2 <- do.call(rbind, lapply(fold_results, `[[`, "pR2"))
-    mae_mean <- colMeans(fold_mae, na.rm = TRUE)
-    mae_se <- apply(fold_mae, 2, sd, na.rm = TRUE) / sqrt(colSums(!is.na(fold_mae)))
-    mse_mean <- colMeans(fold_mse, na.rm = TRUE)
-    mse_se <- apply(fold_mse, 2, sd, na.rm = TRUE) / sqrt(colSums(!is.na(fold_mse)))
-    pR2_mean <- colMeans(fold_pR2, na.rm = TRUE)
-    pR2_se <- apply(fold_pR2, 2, sd, na.rm = TRUE) / sqrt(colSums(!is.na(fold_pR2)))
-    valid_mae <- which(is.finite(mae_mean))
-    if (length(valid_mae) == 0) stop("No valid CV results.", call. = FALSE)
-    mae_min_idx <- valid_mae[which.min(mae_mean[valid_mae])]
-    valid_mse <- which(is.finite(mse_mean))
-    mse_min_idx <- valid_mse[which.min(mse_mean[valid_mse])]
-    valid_pR2 <- which(is.finite(pR2_mean))
-    pR2_max_idx <- if (length(valid_pR2) > 0) valid_pR2[which.max(pR2_mean[valid_pR2])] else NA
-    mae_threshold <- mae_mean[mae_min_idx] + mae_se[mae_min_idx]
-    mae_1se_candidates <- which(mae_mean <= mae_threshold & is.finite(mae_mean))
-    mae_1se_idx <- if (length(mae_1se_candidates) == 0) mae_min_idx else min(mae_1se_candidates)
-    mse_threshold <- mse_mean[mse_min_idx] + mse_se[mse_min_idx]
-    mse_1se_candidates <- which(mse_mean <= mse_threshold & is.finite(mse_mean))
-    mse_1se_idx <- if (length(mse_1se_candidates) == 0) mse_min_idx else min(mse_1se_candidates)
-    if (!is.na(pR2_max_idx)) {
-      pR2_threshold <- pR2_mean[pR2_max_idx] - pR2_se[pR2_max_idx]
-      pR2_1se_candidates <- which(pR2_mean >= pR2_threshold & is.finite(pR2_mean))
-      pR2_1se_idx <- if (length(pR2_1se_candidates) == 0) pR2_max_idx else min(pR2_1se_candidates)
-    } else {
-      pR2_1se_idx <- NA
-    }
+    mae <- .cv_min_1se(do.call(rbind, lapply(fold_results, `[[`, "mae")))
+    mse <- .cv_min_1se(do.call(rbind, lapply(fold_results, `[[`, "mse")))
+    pR2 <- .cv_min_1se(do.call(rbind, lapply(fold_results, `[[`, "pR2")),
+                       maximize = TRUE, allow_empty = TRUE)
     nzero <- fit_full$df
     names(nzero) <- paste0("s", round(lambda_path, 7))
-    index <- matrix(c(mae_min_idx, mae_1se_idx, mse_min_idx, mse_1se_idx,
-                       pR2_max_idx, pR2_1se_idx),
+    index <- matrix(c(mae$opt_idx, mae$ise_idx, mse$opt_idx, mse$ise_idx,
+                      pR2$opt_idx, pR2$ise_idx),
                     nrow = 2, ncol = 3,
                     dimnames = list(c("min", "1se"), c("MAE", "MSE", "pR2")))
     structure(
       list(
         lambda = lambda_path,
-        cvm.mae = mae_mean, cvsd.mae = mae_se,
-        cvup.mae = mae_mean + mae_se, cvlo.mae = mae_mean - mae_se,
-        lambda.min.mae = lambda_path[mae_min_idx],
-        lambda.1se.mae = lambda_path[mae_1se_idx],
-        cvm.mse = mse_mean, cvsd.mse = mse_se,
-        cvup.mse = mse_mean + mse_se, cvlo.mse = mse_mean - mse_se,
-        lambda.min.mse = lambda_path[mse_min_idx],
-        lambda.1se.mse = lambda_path[mse_1se_idx],
-        cvm.pR2 = pR2_mean, cvsd.pR2 = pR2_se,
-        cvup.pR2 = pR2_mean + pR2_se, cvlo.pR2 = pR2_mean - pR2_se,
-        lambda.max.pR2 = if (!is.na(pR2_max_idx)) lambda_path[pR2_max_idx] else NA,
-        lambda.1se.pR2 = if (!is.na(pR2_1se_idx)) lambda_path[pR2_1se_idx] else NA,
+        cvm.mae = mae$mean, cvsd.mae = mae$se,
+        cvup.mae = mae$mean + mae$se, cvlo.mae = mae$mean - mae$se,
+        lambda.min.mae = lambda_path[mae$opt_idx],
+        lambda.1se.mae = lambda_path[mae$ise_idx],
+        cvm.mse = mse$mean, cvsd.mse = mse$se,
+        cvup.mse = mse$mean + mse$se, cvlo.mse = mse$mean - mse$se,
+        lambda.min.mse = lambda_path[mse$opt_idx],
+        lambda.1se.mse = lambda_path[mse$ise_idx],
+        cvm.pR2 = pR2$mean, cvsd.pR2 = pR2$se,
+        cvup.pR2 = pR2$mean + pR2$se, cvlo.pR2 = pR2$mean - pR2$se,
+        lambda.max.pR2 = if (!is.na(pR2$opt_idx)) lambda_path[pR2$opt_idx] else NA,
+        lambda.1se.pR2 = if (!is.na(pR2$ise_idx)) lambda_path[pR2$ise_idx] else NA,
         nzero = nzero, cpmnet.fit = fit_full, index = index,
-        type = type, nfolds_successful = nfolds_actual, call = match.call()
-      ),
-      class = "cv.cpmnet"
-    )
-  } else if (type %in% c("pinball_abs", "pinball_sq")) {
-    fold_pb <- do.call(rbind, lapply(fold_results, `[[`, "pinball"))
-    pb_mean <- colMeans(fold_pb, na.rm = TRUE)
-    pb_se <- apply(fold_pb, 2, sd, na.rm = TRUE) / sqrt(colSums(!is.na(fold_pb)))
-    valid_pb <- which(is.finite(pb_mean))
-    if (length(valid_pb) == 0) stop("No valid CV results.", call. = FALSE)
-    pb_min_idx <- valid_pb[which.min(pb_mean[valid_pb])]
-    pb_threshold <- pb_mean[pb_min_idx] + pb_se[pb_min_idx]
-    pb_1se_candidates <- which(pb_mean <= pb_threshold & is.finite(pb_mean))
-    pb_1se_idx <- if (length(pb_1se_candidates) == 0) pb_min_idx else min(pb_1se_candidates)
-    nzero <- fit_full$df
-    names(nzero) <- paste0("s", round(lambda_path, 7))
-    index <- matrix(c(pb_min_idx, pb_1se_idx), nrow = 2, ncol = 1,
-                    dimnames = list(c("min", "1se"), type))
-    structure(
-      list(
-        lambda = lambda_path,
-        cvm = pb_mean, cvsd = pb_se,
-        cvup = pb_mean + pb_se, cvlo = pb_mean - pb_se,
-        lambda.min = lambda_path[pb_min_idx],
-        lambda.1se = lambda_path[pb_1se_idx],
-        nzero = nzero, cpmnet.fit = fit_full, index = index,
-        type = type, tau_levels = tau_levels, tau_weights = tau_weights,
-        nfolds_successful = nfolds_actual, call = match.call()
-      ),
-      class = "cv.cpmnet"
-    )
-  } else if (type == "brier") {
-    fold_bs <- do.call(rbind, lapply(fold_results, `[[`, "brier"))
-    bs_mean <- colMeans(fold_bs, na.rm = TRUE)
-    bs_se <- apply(fold_bs, 2, sd, na.rm = TRUE) / sqrt(colSums(!is.na(fold_bs)))
-    valid_bs <- which(is.finite(bs_mean))
-    if (length(valid_bs) == 0) stop("No valid CV results.", call. = FALSE)
-    bs_min_idx <- valid_bs[which.min(bs_mean[valid_bs])]
-    bs_threshold <- bs_mean[bs_min_idx] + bs_se[bs_min_idx]
-    bs_1se_candidates <- which(bs_mean <= bs_threshold & is.finite(bs_mean))
-    bs_1se_idx <- if (length(bs_1se_candidates) == 0) bs_min_idx else min(bs_1se_candidates)
-    nzero <- fit_full$df
-    names(nzero) <- paste0("s", round(lambda_path, 7))
-    index <- matrix(c(bs_min_idx, bs_1se_idx), nrow = 2, ncol = 1,
-                    dimnames = list(c("min", "1se"), "brier"))
-    structure(
-      list(
-        lambda = lambda_path,
-        cvm = bs_mean, cvsd = bs_se,
-        cvup = bs_mean + bs_se, cvlo = bs_mean - bs_se,
-        lambda.min = lambda_path[bs_min_idx],
-        lambda.1se = lambda_path[bs_1se_idx],
-        nzero = nzero, cpmnet.fit = fit_full, index = index,
-        type = type, brier_probs = brier_probs, brier_weights = brier_weights,
-        brier_cuts = brier_cuts,
-        nfolds_successful = nfolds_actual, call = match.call()
+        type = type, nfolds_successful = nfolds_actual, call = cv_call
       ),
       class = "cv.cpmnet"
     )
   } else {
-    # psr_abs or psr_sq
-    fold_psr <- do.call(rbind, lapply(fold_results, `[[`, "psr"))
-    psr_mean <- colMeans(fold_psr, na.rm = TRUE)
-    psr_se <- apply(fold_psr, 2, sd, na.rm = TRUE) / sqrt(colSums(!is.na(fold_psr)))
-    valid_psr <- which(is.finite(psr_mean))
-    if (length(valid_psr) == 0) stop("No valid CV results.", call. = FALSE)
-    psr_min_idx <- valid_psr[which.min(psr_mean[valid_psr])]
-    psr_threshold <- psr_mean[psr_min_idx] + psr_se[psr_min_idx]
-    psr_1se_candidates <- which(psr_mean <= psr_threshold & is.finite(psr_mean))
-    psr_1se_idx <- if (length(psr_1se_candidates) == 0) psr_min_idx else min(psr_1se_candidates)
-    nzero <- fit_full$df
-    names(nzero) <- paste0("s", round(lambda_path, 7))
-    index <- matrix(c(psr_min_idx, psr_1se_idx), nrow = 2, ncol = 1,
-                    dimnames = list(c("min", "1se"), type))
-    structure(
-      list(
-        lambda = lambda_path,
-        cvm = psr_mean, cvsd = psr_se,
-        cvup = psr_mean + psr_se, cvlo = psr_mean - psr_se,
-        lambda.min = lambda_path[psr_min_idx],
-        lambda.1se = lambda_path[psr_1se_idx],
-        nzero = nzero, cpmnet.fit = fit_full, index = index,
-        type = type,
-        nfolds_successful = nfolds_actual, call = match.call()
-      ),
-      class = "cv.cpmnet"
-    )
+    # single-criterion types: pinball_*, brier, loglik, psr_*
+    slot <- switch(type,
+                   pinball_abs = "pinball", pinball_sq = "pinball",
+                   brier = "brier", loglik = "negll", "psr")
+    extra <- switch(type,
+                    pinball_abs = ,
+                    pinball_sq = list(tau_levels = tau_levels,
+                                      tau_weights = tau_weights),
+                    brier = list(brier_probs = brier_probs,
+                                 brier_weights = brier_weights,
+                                 brier_cuts = brier_cuts),
+                    NULL)
+    sel <- .cv_min_1se(do.call(rbind, lapply(fold_results, `[[`, slot)))
+    .cv_result(lambda_path, sel, fit_full, type, extra, nfolds_actual, cv_call)
   }
+}
+
+# Shared validator for a probability grid and its weights (tau_levels /
+# tau_weights, brier_probs / brier_weights). Returns the weights,
+# defaulting to uniform.
+#' @keywords internal
+#' @noRd
+.check_prob_grid <- function(values, weights, val_name, wt_name) {
+  if (!is.numeric(values) || length(values) == 0L) {
+    stop(val_name, " must be a non-empty numeric vector; got ",
+         deparse(values), call. = FALSE)
+  }
+  if (any(!is.finite(values))) {
+    stop(val_name, " must contain no NA/NaN/Inf", call. = FALSE)
+  }
+  if (any(values <= 0) || any(values >= 1)) {
+    stop(val_name, " must lie strictly in (0, 1); got range [",
+         min(values), ", ", max(values), "]", call. = FALSE)
+  }
+  if (is.unsorted(values)) {
+    stop(val_name, " must be sorted in increasing order", call. = FALSE)
+  }
+  n_val <- length(values)
+  if (is.null(weights)) {
+    weights <- rep(1.0 / n_val, n_val)
+  } else {
+    if (!is.numeric(weights) || length(weights) != n_val) {
+      stop(wt_name, " must be numeric of length ", n_val,
+           " (matching ", val_name, "); got length ", length(weights),
+           call. = FALSE)
+    }
+    if (any(!is.finite(weights)) || any(weights < 0)) {
+      stop(wt_name, " must be non-negative and finite", call. = FALSE)
+    }
+    if (abs(sum(weights) - 1.0) > 1e-8) {
+      stop(wt_name, " must sum to 1; got sum = ", sum(weights),
+           call. = FALSE)
+    }
+  }
+  weights
+}
+
+# Shared min + 1se lambda-index selection from a folds x nlambda matrix of
+# criterion values. maximize = TRUE flips the rule (pR2). With
+# allow_empty = TRUE an all-NA criterion returns NA indices instead of
+# stopping (pR2 under type = "median").
+#' @keywords internal
+#' @noRd
+.cv_min_1se <- function(fold_mat, maximize = FALSE, allow_empty = FALSE) {
+  m <- colMeans(fold_mat, na.rm = TRUE)
+  se <- apply(fold_mat, 2, sd, na.rm = TRUE) / sqrt(colSums(!is.na(fold_mat)))
+  valid <- which(is.finite(m))
+  if (length(valid) == 0) {
+    if (allow_empty) return(list(mean = m, se = se, opt_idx = NA, ise_idx = NA))
+    stop("No valid CV results.", call. = FALSE)
+  }
+  opt_idx <- if (maximize) valid[which.max(m[valid])]
+             else valid[which.min(m[valid])]
+  if (maximize) {
+    threshold <- m[opt_idx] - se[opt_idx]
+    cand <- which(m >= threshold & is.finite(m))
+  } else {
+    threshold <- m[opt_idx] + se[opt_idx]
+    cand <- which(m <= threshold & is.finite(m))
+  }
+  ise_idx <- if (length(cand) == 0) opt_idx else min(cand)
+  list(mean = m, se = se, opt_idx = opt_idx, ise_idx = ise_idx)
+}
+
+# Assemble the cv.cpmnet return object for the single-criterion types.
+# `extra` fields sit after `type` (tau_* for pinball, brier_* for brier,
+# none otherwise) so the element order is the same for every type.
+#' @keywords internal
+#' @noRd
+.cv_result <- function(lambda_path, sel, fit_full, type, extra,
+                       nfolds_actual, call) {
+  nzero <- fit_full$df
+  names(nzero) <- paste0("s", round(lambda_path, 7))
+  index <- matrix(c(sel$opt_idx, sel$ise_idx), nrow = 2, ncol = 1,
+                  dimnames = list(c("min", "1se"), type))
+  structure(
+    c(list(
+        lambda = lambda_path,
+        cvm = sel$mean, cvsd = sel$se,
+        cvup = sel$mean + sel$se, cvlo = sel$mean - sel$se,
+        lambda.min = lambda_path[sel$opt_idx],
+        lambda.1se = lambda_path[sel$ise_idx],
+        nzero = nzero, cpmnet.fit = fit_full, index = index,
+        type = type),
+      extra,
+      list(nfolds_successful = nfolds_actual, call = call)),
+    class = "cv.cpmnet"
+  )
 }

@@ -96,7 +96,8 @@ plot.cpmnet <- function(x, xvar = c("lambda", "norm", "dev"),
 #'
 #' @export
 plot.cv.cpmnet <- function(x, metric = NULL, sign.lambda = 1, ...) {
-  if (x$type %in% c("pinball_abs", "pinball_sq", "brier", "psr_abs", "psr_sq")) {
+  if (x$type %in% c("pinball_abs", "pinball_sq", "brier", "psr_abs", "psr_sq",
+                    "loglik")) {
     cvm <- x$cvm
     cvsd <- x$cvsd
     cvup <- x$cvup
@@ -108,7 +109,8 @@ plot.cv.cpmnet <- function(x, metric = NULL, sign.lambda = 1, ...) {
                    pinball_sq = "Pinball Loss (Squared)",
                    brier = "Brier Score",
                    psr_abs = "PSR (Absolute)",
-                   psr_sq = "PSR (Squared)")
+                   psr_sq = "PSR (Squared)",
+                   loglik = "Negative Log-Likelihood")
   } else {
     if (is.null(metric)) metric <- "mae"
     valid_metrics <- c("mae", "mse", "pR2")

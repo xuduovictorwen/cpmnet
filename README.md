@@ -5,10 +5,10 @@ Penalized Cumulative Probability Models with Elastic Net.
 `cpmnet` fits cumulative probability models (CPMs) with an elastic-net
 penalty along a full penalization (regularization) path, using coordinate descent
 implemented in Fortran. Cross-validation selects `lambda` under one of
-four conceptual criteria: mean or median regression loss, pinball
-quantile loss, or the Brier score over a percentile grid. The
-Brier variant is the default and is the criterion recommended in the
-accompanying methods paper.
+five conceptual criteria: mean or median regression loss, pinball
+quantile loss, the Brier score over a percentile grid, or the held-out
+log-likelihood. The Brier variant is the default and is the criterion
+recommended in the accompanying methods paper.
 
 ## Installation
 
@@ -92,7 +92,7 @@ predict(cvfit$cpmnet.fit, newx = x[1:5, ],
 
 ## Cross-validation criteria
 
-`cv.cpmnet(type = ...)` supports four `type` of conceptual
+`cv.cpmnet(type = ...)` supports five `type` of conceptual
 criteria emphasized in the methods paper:
 
 - `"brier"` (default): squared Brier score averaged over response
@@ -103,6 +103,11 @@ criteria emphasized in the methods paper:
   `lambda.1se.pR2`.
 - `"pinball_abs"`, `"pinball_sq"`: pinball loss, absolute or squared,
   over `tau_levels`.
+- `"loglik"`: held-out log-likelihood of the observed outcome
+  categories, maximized (the criterion `ordinalNet` calls `cvLoglik`).
+  `cvm` stores its negative, so `lambda.min` / `lambda.1se` keep their
+  usual meaning. A held-out outcome outside the training support is
+  assigned the boundary category.
 
 ## S3 methods
 

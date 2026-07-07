@@ -222,24 +222,38 @@ predict_quantile_cpmnet <- function(object, newx, s = NULL, tau_levels,
 #' @keywords internal
 #' @noRd
 predict_psr_cpmnet <- function(object, newx, y_test, s = NULL) {
-
   args <- .prepare_predict_args(object, newx, s)
+  .check_y_test(y_test, args$n_obs)
+  obs_idx <- .psr_obs_idx(y_test, object$data_prep$y_mapping, args$k)
+  .psr_cdf_at(args, obs_idx)
+}
 
-  if (!is.numeric(y_test) || length(y_test) != args$n_obs) {
+# y_test validation shared by predict_psr_cpmnet and
+# predict_loglik_mass_cpmnet.
+#' @keywords internal
+#' @noRd
+.check_y_test <- function(y_test, n_obs) {
+  if (!is.numeric(y_test) || length(y_test) != n_obs) {
     stop("y_test must be a numeric vector of length nrow(newx) = ",
-         args$n_obs, "; got length ", length(y_test), call. = FALSE)
+         n_obs, "; got length ", length(y_test), call. = FALSE)
   }
   if (any(!is.finite(y_test))) {
     stop("y_test must contain no NA/NaN/Inf", call. = FALSE)
   }
+  invisible(TRUE)
+}
 
-  k <- args$k
-  y_map <- object$data_prep$y_mapping
-  # split by ordered support position, not numeric midpoint
+# Category index of each y_test value in the ordered training support
+# (the PSR rule): exact atoms keep their index, out-of-support values
+# clamp to the boundary categories, and interior values split by ordered
+# support position (not numeric midpoint), rounding toward the middle.
+#' @keywords internal
+#' @noRd
+.psr_obs_idx <- function(y_test, y_map, k) {
   j <- findInterval(y_test, y_map)
   mid_j <- floor(k / 2L)
-  obs_idx <- integer(args$n_obs)
-  for (i in seq_len(args$n_obs)) {
+  obs_idx <- integer(length(y_test))
+  for (i in seq_along(y_test)) {
     if (j[i] == 0L) {
       obs_idx[i] <- 1L
     } else if (j[i] >= k + 1L) {
@@ -252,16 +266,39 @@ predict_psr_cpmnet <- function(object, newx, y_test, s = NULL) {
       obs_idx[i] <- j[i]
     }
   }
-  result <- .Fortran("cpm_predict_psr",
-                     n = as.integer(args$n_obs), p = as.integer(args$p),
-                     k = as.integer(k),
-                     newx = args$newx, alpha = args$alpha_mat,
-                     beta = args$beta_mat,
-                     link_type = as.integer(args$link_type),
-                     obs_idx = as.integer(obs_idx),
-                     cdf_out = matrix(0.0, args$n_obs, args$n_lambda),
-                     n_lambda = as.integer(args$n_lambda))
-  result$cdf_out
+  obs_idx
+}
+
+# CDF at the given support indices via the cpm_predict_psr kernel
+# (index 0 -> 0, index k + 1 -> 1).
+#' @keywords internal
+#' @noRd
+.psr_cdf_at <- function(args, obs_idx) {
+  .Fortran("cpm_predict_psr",
+           n = as.integer(args$n_obs), p = as.integer(args$p),
+           k = as.integer(args$k),
+           newx = args$newx, alpha = args$alpha_mat,
+           beta = args$beta_mat,
+           link_type = as.integer(args$link_type),
+           obs_idx = as.integer(obs_idx),
+           cdf_out = matrix(0.0, args$n_obs, args$n_lambda),
+           n_lambda = as.integer(args$n_lambda))$cdf_out
+}
+
+# Category mass P(Y = category of y_test | X = x_i) at the observed y,
+# for the held-out log-likelihood CV criterion. The category index uses
+# the same ordered-support rule as predict_psr_cpmnet (out-of-support
+# values clamp to the boundary categories; interior values round toward
+# the middle). Mass = F(u_idx) - F(u_idx - 1); the Fortran kernel returns
+# 0 for index 0 and 1 for index k + 1, so the boundary masses are
+# F(u_1) below the support and 1 - F(u_k) above it.
+#' @keywords internal
+#' @noRd
+predict_loglik_mass_cpmnet <- function(object, newx, y_test, s = NULL) {
+  args <- .prepare_predict_args(object, newx, s)
+  .check_y_test(y_test, args$n_obs)
+  obs_idx <- .psr_obs_idx(y_test, object$data_prep$y_mapping, args$k)
+  .psr_cdf_at(args, obs_idx) - .psr_cdf_at(args, obs_idx - 1L)
 }
 
 # CDF prediction via Fortran.

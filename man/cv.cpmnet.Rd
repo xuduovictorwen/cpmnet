@@ -9,7 +9,8 @@ cv.cpmnet(
   y,
   nfolds = 10,
   foldid = NULL,
-  type = c("brier", "mean", "median", "pinball_abs", "pinball_sq", "psr_abs", "psr_sq"),
+  type = c("brier", "mean", "median", "pinball_abs", "pinball_sq", "psr_abs", "psr_sq",
+    "loglik"),
   parallel = TRUE,
   ncores = NULL,
   tau_levels = seq(0.1, 0.9, by = 0.1),
@@ -32,12 +33,22 @@ observation to a fold. When supplied, values must form
 
 \item{type}{cross-validation loss. One of \code{"brier"} (default),
 \code{"mean"}, \code{"median"}, \code{"pinball_abs"},
-\code{"pinball_sq"}, \code{"psr_abs"}, \code{"psr_sq"}.
-These map to four conceptual criteria emphasized in the paper:
+\code{"pinball_sq"}, \code{"psr_abs"}, \code{"psr_sq"},
+\code{"loglik"}.
+These map to five conceptual criteria emphasized in the paper:
 mean and median regression loss (with MAE/MSE/pR2 reported),
-pinball quantile loss (absolute or squared variant), and the
-Brier score. The \code{"psr_*"} options remain in the package
-for completeness but are not part of the paper's primary set.}
+pinball quantile loss (absolute or squared variant), the
+Brier score, and the held-out log-likelihood. The \code{"psr_*"}
+options remain in the package for completeness but are not part
+of the paper's primary set. \code{"loglik"} selects the lambda
+that maximizes the mean held-out log-likelihood of the observed
+outcome categories (the criterion \code{ordinalNet} calls
+\code{cvLoglik}); \code{cvm} stores its negative so that
+\code{lambda.min} keeps its usual minimizing meaning. A held-out
+outcome outside the training support is assigned the boundary
+category, following the same convention as the \code{"psr_*"}
+criteria; category masses are floored at \code{1e-12} before the
+log.}
 
 \item{parallel}{if \code{TRUE} (default), use \code{parallel::mclapply}.
 Ignored on Windows with a warning.}
@@ -70,10 +81,10 @@ An object of class \code{"cv.cpmnet"}. Structure depends on
 }
 \description{
 Performs k-fold cross-validation for a \code{cpmnet} model and selects
-lambda according to one of four conceptual criteria: mean, median,
-pinball, or Brier. The default,
-\code{"brier"}, averages the squared Brier score across a user-specified
-grid of response percentiles and is the criterion recommended in the
+lambda according to one of five conceptual criteria: mean, median,
+pinball, Brier, or held-out log-likelihood. The default, \code{"brier"},
+averages the squared Brier score across a user-specified grid of
+response percentiles and is the criterion recommended in the
 accompanying methods paper.
 }
 \examples{
