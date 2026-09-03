@@ -9,10 +9,7 @@ real(dp), parameter :: INV_SQRT2 = 0.70710678118654752440_dp
 real(dp), parameter :: INV_SQRT2PI = 0.39894228040143267794_dp
 real(dp), parameter :: INV_PI = 0.31830988618379067154_dp
 
-! Numerical safety: see ormll_path_enet.f90. This routine only evaluates the
-! gradient/Hessian at the (strictly ordered) initial intercepts to derive
-! lambda_max, so every d(i) > 0 and no probability floor is needed; eta stays
-! near the modest initial intercepts, so no eta clamp is needed either.
+! lambda_max only
 
 integer(int32), intent(in)     :: n, y(n), k, p, link
 real(dp),       intent(in)     :: x(n, p), wt(n), alpha(k), lambda, alpha_en
@@ -31,13 +28,13 @@ inv_n = 1.0_dp / real(n, dp)
 allocate(lp(n), d(n), pdf1(n), pdf2(n), dpdf1(n), dpdf2(n), stat=salloc)
 if (salloc /= 0) return
 
-! Compute linear predictor
+
 lp = matmul(x, beta)
 
-! Compute probabilities and derivatives at current beta
+
 call compute_probs_fast(n, k, alpha, lp, y, link, d, pdf1, pdf2, dpdf1, dpdf2)
 
-! Compute all gradients and Hessians at current point BEFORE any updates
+! all derivatives before any update
 do l = 1, p
     u(l) = 0.0_dp
     hb(l) = 0.0_dp
@@ -65,7 +62,7 @@ do l = 1, p
     hb(l) = hb(l) * inv_n
 end do
 
-! Coordinate descent updates
+
 do l = 1, p
     beta_old = beta(l)
     
@@ -86,7 +83,7 @@ do l = 1, p
     end if
 end do
 
-! Final log-likelihood
+
 logL = 0.0_dp
 do i = 1, n
     logL = logL + wt(i) * log(d(i))

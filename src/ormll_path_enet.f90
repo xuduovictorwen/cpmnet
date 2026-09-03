@@ -1,7 +1,5 @@
-! Compile: gfortran -shared -fPIC -O2 -o ormll_path_enet.so ormll_path_enet.f90
-! Note: -ffast-math and -march=native are intentionally omitted for
-! portability and IEEE correctness. The numerical guards below (Newton
-! line search, pivot checks) rely on standard IEEE semantics.
+! elastic net CPM path fit
+! build without -ffast-math or -march=native
 
 subroutine ormll_path_enet(n, k, p, x, y, wt, link, &
                            nlambda, lambda_path, alpha_en, &
@@ -14,32 +12,14 @@ subroutine ormll_path_enet(n, k, p, x, y, wt, link, &
 use, intrinsic :: ISO_FORTRAN_ENV, only: dp => real64, int32
 implicit none
 
-! Precomputed constants
+! constants
 real(dp), parameter :: PI = 3.14159265358979323846_dp
 real(dp), parameter :: SQRT2 = 1.41421356237309504880_dp
 real(dp), parameter :: INV_SQRT2 = 0.70710678118654752440_dp
 real(dp), parameter :: INV_SQRT2PI = 0.39894228040143267794_dp
 real(dp), parameter :: INV_PI = 0.31830988618379067154_dp
 
-! Numerical safety constants
-! The intercept update is a damped Newton step (backtracking line search,
-! MAX_HALVING below). Each trial step is accepted only if every interval
-! probability d(i) stays > 0 AND the deviance does not increase, so the
-! fitted intercepts remain strictly ordered and d(i) is positive by
-! construction. No probability floor is therefore needed (or used): d(i)
-! enters the gradient, Hessian, and log-likelihood directly. This is what
-! lets the heavy-tailed cauchit link converge -- an undamped Newton step
-! overshoots there (the Cauchy log-likelihood is not concave) and used to
-! drive the intercepts to +/-1e4, which a probability floor only masked.
-! The same d(i) > 0 guard also makes a separate eta clamp unnecessary: for
-! the Gumbel links (loglog, cloglog) the interval probability underflows to
-! 0 by |eta| ~ 6.6, so any step heading toward the inner-exp() overflow
-! threshold (eta ~ 709.8) is rejected long before eta could get there.
-! PIVOT_EPS: minimum absolute pivot in the tridiagonal Thomas solver.
-!          Below this we flag the Hessian as effectively singular and
-!          return a nonzero salloc.
-! MAX_HALVING: maximum backtracking steps in the intercept line search.
-integer(int32), parameter :: MAX_HALVING = 30
+integer(int32), parameter :: MAX_HALVING = 30   ! line search step halvings
 real(dp), parameter :: PIVOT_EPS = 1.0e-14_dp
 
 integer(int32), intent(in) :: n, k, p, nlambda, link, max_iter_outer
@@ -78,7 +58,7 @@ do i_lambda = 1, nlambda
     lambda1 = lambda * alpha_en
     lambda2 = lambda * (1.0_dp - alpha_en)
 
-    ! Compute initial linear predictor
+    ! initial linear predictor
     lp = 0.0_dp
     do l = 1, p
         if (beta_curr(l) /= 0.0_dp) then
@@ -95,10 +75,10 @@ do i_lambda = 1, nlambda
         alpha_prev = alpha_curr
         beta_prev = beta_curr
 
-        ! Compute probabilities using optimized routine
+
         call compute_probs_fast(n, k, alpha_curr, lp, y, link, d, pdf1, pdf2, dpdf1, dpdf2, eta1, eta2)
 
-        ! Compute gradient for alpha (vectorized where possible)
+        ! alpha gradient
         grad_alpha = 0.0_dp
         do i = 1, n
             j = y(i)
@@ -113,7 +93,7 @@ do i_lambda = 1, nlambda
             end if
         end do
 
-        ! Compute Hessian for alpha
+        ! alpha Hessian
         hess_diag = 0.0_dp
         hess_offdiag = 0.0_dp
         do i = 1, n
@@ -141,9 +121,7 @@ do i_lambda = 1, nlambda
             return
         end if
 
-        ! Deviance at alpha_prev. d still holds the alpha_prev probabilities
-        ! computed above; for a strictly ordered alpha every d(i) > 0. Guard
-        ! against a non-ordered start so the line search can still recover.
+        ! d is at alpha_prev
         dev_old = 0.0_dp
         do i = 1, n
             if (d(i) <= 0.0_dp) then
@@ -153,11 +131,7 @@ do i_lambda = 1, nlambda
             dev_old = dev_old - wt(i) * log(d(i))
         end do
 
-        ! Damped Newton: backtrack along the full step until every interval
-        ! probability is positive AND the deviance does not increase. This
-        ! keeps the intercepts strictly ordered (so no probability floor is
-        ! needed) and makes the update globally convergent for every link,
-        ! including the non-log-concave cauchit, whose undamped step diverges.
+        ! damped Newton step
         step_t = 1.0_dp
         accepted = .false.
         do ls = 1, MAX_HALVING
@@ -184,18 +158,16 @@ do i_lambda = 1, nlambda
         end do
 
         if (.not. accepted) then
-            ! No improving step along the Newton direction (indefinite Hessian
-            ! far from the optimum); leave the intercepts unchanged and let the
-            ! beta sweep / next outer iteration make progress.
+            ! no improving step
             alpha_curr = alpha_prev
             call compute_probs_fast(n, k, alpha_curr, lp, y, link, d, pdf1, pdf2, dpdf1, dpdf2, eta1, eta2)
         end if
 
-        ! Coordinate descent on beta
+        ! beta coordinate descent
         do l = 1, p
             beta_old = beta_curr(l)
 
-            ! Compute gradient and Hessian for beta_l in single pass
+
             z_j = 0.0_dp
             w = 0.0_dp
             do i = 1, n
@@ -218,7 +190,7 @@ do i_lambda = 1, nlambda
             z_j = z_j * inv_n
             w = w * inv_n
 
-            ! Elastic net update
+
             z = w * beta_old - z_j
             if (abs(z) <= lambda1 * penalty_factor(l)) then
                 beta_curr(l) = 0.0_dp
@@ -226,7 +198,7 @@ do i_lambda = 1, nlambda
                 beta_curr(l) = sign(1.0_dp, z) * (abs(z) - lambda1 * penalty_factor(l)) / (w + lambda2 * penalty_factor(l))
             end if
 
-            ! Update linear predictor and recompute probabilities if beta changed
+
             s = beta_curr(l) - beta_old
             if (s /= 0.0_dp) then
                 do i = 1, n
@@ -236,7 +208,7 @@ do i_lambda = 1, nlambda
             end if
         end do
 
-        ! Check convergence
+
         max_change = 0.0_dp
         do j = 1, k
             if (abs(alpha_curr(j) - alpha_prev(j)) > max_change) then
@@ -261,7 +233,7 @@ do i_lambda = 1, nlambda
 
     end do
 
-    ! Final log-likelihood
+
     call compute_probs_fast(n, k, alpha_curr, lp, y, link, d, pdf1, pdf2, dpdf1, dpdf2, eta1, eta2)
     logL_vec(i_lambda) = 0.0_dp
     do i = 1, n
@@ -282,8 +254,7 @@ return
 
 contains
 
-! Optimized probability computation - computes CDF, PDF, dPDF in single pass
-! Avoids redundant exp() calls by reusing intermediate values
+! CDF, PDF, dPDF in one pass
 subroutine compute_probs_fast(nn, kk, alpha, lp, yy, link_type, dd, pdf1, pdf2, dpdf1, dpdf2, eta1, eta2)
     integer(int32), intent(in) :: nn, kk, link_type
     integer(int32), intent(in) :: yy(nn)
@@ -294,9 +265,7 @@ subroutine compute_probs_fast(nn, kk, alpha, lp, yy, link_type, dd, pdf1, pdf2, 
     integer(int32) :: ii, jj
     real(dp) :: cdf1, cdf2, e1, e2, t1, t2
 
-    ! Precompute eta values to improve cache locality. No clamp: the d(i) > 0
-    ! line-search guard rejects any step that would drive |eta| toward the
-    ! inner-exp() overflow threshold (see header).
+
     do ii = 1, nn
         jj = yy(ii)
         if (jj == 0) then
@@ -309,7 +278,7 @@ subroutine compute_probs_fast(nn, kk, alpha, lp, yy, link_type, dd, pdf1, pdf2, 
         end if
     end do
 
-    ! Compute CDF, PDF, dPDF based on link function
+
     select case(link_type)
 
     case(1)  ! Logistic

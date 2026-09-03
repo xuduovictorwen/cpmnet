@@ -1,8 +1,4 @@
-! Conditional median / mean prediction from the fitted CPM. One shared
-! body for all five links; the per-link CDF formula lives in link_cdf
-! below. pred_type 1 = median (step-CDF lookup with midpoint tie rule),
-! 2 = mean (expectation over the category masses, accumulated without
-! storing the PMF).
+! conditional median or mean
 subroutine cpm_predict(n, p, k, newx, alpha, beta, y_mapping, &
                        link_type, pred_type, predictions, &
                        n_lambda, tol)
@@ -24,7 +20,7 @@ subroutine cpm_predict(n, p, k, newx, alpha, beta, y_mapping, &
   do l = 1, n_lambda
     xb_vec = matmul(newx, beta(:, l))
     if (pred_type == 1) then
-      ! MEDIAN
+
       do i = 1, n
         xb = xb_vec(i)
         do j = 1, k
@@ -43,7 +39,7 @@ subroutine cpm_predict(n, p, k, newx, alpha, beta, y_mapping, &
         end if
       end do
     else
-      ! MEAN - compute incrementally without storing PMF
+      ! mean
       do i = 1, n
         xb = xb_vec(i)
         mean_pred = 0.0d0
@@ -54,7 +50,7 @@ subroutine cpm_predict(n, p, k, newx, alpha, beta, y_mapping, &
           mean_pred = mean_pred + y_mapping(j) * pmf_j
           cdf_prev = cdf_curr
         end do
-        ! last category: pmf = 1 - cdf_prev
+
         mean_pred = mean_pred + y_mapping(k+1) * (1.0d0 - cdf_prev)
         predictions(i, l) = mean_pred
       end do
@@ -63,7 +59,6 @@ subroutine cpm_predict(n, p, k, newx, alpha, beta, y_mapping, &
 
 contains
 
-  ! P(Y <= u_j | x) for eta = alpha_j + x'beta, by link.
   pure function link_cdf(eta) result(c)
     double precision, intent(in) :: eta
     double precision :: c

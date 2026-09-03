@@ -1,11 +1,7 @@
-# internal constants
-# used in create_lambda_path when lambda_min == 0, we replace the trailing
-# zero with a very small positive value for log-spaced stability
+# replaces a trailing lambda_min of 0
 .CPMNET_LAMBDA_MIN_FLOOR_RATIO <- 1e-8
 
-# used in compute_lambda_max to avoid division by zero when alpha_en is 0
-# (pure ridge); matches the glmnet convention of treating alpha = 0 as
-# alpha = 0.001 for lambda_max computation only
+# alpha_en 0 becomes 0.001 for lambda_max
 .CPMNET_LAMBDA_MAX_ALPHA_FLOOR <- 0.001
 
 #' @keywords internal
@@ -13,7 +9,7 @@
 validate_cpmnet_inputs <- function(x, y, family, alpha_en, weights, lambda,
                                    standardize = TRUE, adaptive = FALSE) {
 
-  # coerce x to matrix if data.frame/vector, then check numeric/finite
+  # coerce x, check numeric and finite
   if (!is.matrix(x)) x <- as.matrix(x)
   if (!is.numeric(x)) {
     stop("x must be a numeric matrix; got storage.mode '", storage.mode(x), "'",
@@ -108,7 +104,7 @@ validate_cpmnet_inputs <- function(x, y, family, alpha_en, weights, lambda,
     }
   }
 
-  # standardize and adaptive single logicals
+  # standardize and adaptive flags
   if (!is.logical(standardize) || length(standardize) != 1L || is.na(standardize)) {
     stop("standardize must be a single TRUE/FALSE; got ",
          deparse(standardize), call. = FALSE)
@@ -134,9 +130,7 @@ cpm_data_prep <- function(x, y, family, weights, standardize,
     wt <- wt[active]
   }
 
-  # NOTE: rms::recode2integer is not exported. We depend on it for accurate
-  # mapping of tied y values to integer ranks, and track rms releases to
-  # detect breakage. See utils.R :: recode2integer in rms source.
+  # rms::recode2integer is not exported
   recode_result <- rms:::recode2integer(y, precision = 7)
   y_mapping <- recode_result$ylevels
   y_int <- recode_result$y - 1L
@@ -186,6 +180,17 @@ cpm_data_prep <- function(x, y, family, weights, standardize,
   list(x = x, y = y_int, wt = wt, n = n, p = p, k = k, link = link,
        alpha_init = alpha_init, beta_init = rep(0, p),
        x_means = x_means, x_sds = x_sds, y_mapping = y_mapping)
+}
+
+# grid floor, the fit separates below it
+#' @keywords internal
+#' @noRd
+default_lambda_min_ratio <- function(n, p, family) {
+  if (family == "cauchit") {
+    if (n < 1.5 * p) 0.1 else if (n < 4 * p) 0.02 else 1e-4
+  } else {
+    if (n < 1.5 * p) 0.02 else 1e-4
+  }
 }
 
 #' @keywords internal

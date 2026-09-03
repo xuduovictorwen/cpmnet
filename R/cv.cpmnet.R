@@ -79,7 +79,7 @@ cv.cpmnet <- function(x, y, nfolds = 10, foldid = NULL,
 
   type <- match.arg(type)
 
-  # dimensional baseline (so validation errors can reference n)
+  # dimensional baseline
   if (is.vector(x) && !is.matrix(x)) x <- as.matrix(x)
   n <- length(y)
 
@@ -130,7 +130,7 @@ cv.cpmnet <- function(x, y, nfolds = 10, foldid = NULL,
          call. = FALSE)
   }
 
-  # probability grids + weights (pinball and brier types)
+  # probability grids and weights
   tau_weights <- .check_prob_grid(tau_levels, tau_weights,
                                   "tau_levels", "tau_weights")
   n_tau <- length(tau_levels)
@@ -142,7 +142,7 @@ cv.cpmnet <- function(x, y, nfolds = 10, foldid = NULL,
   fit_full <- do.call(cpmnet, c(list(x = x, y = y), dots))
   lambda_path <- fit_full$lambda
   nlambda <- length(lambda_path)
-  # brier thresholds from all y before splitting
+  # brier thresholds before splitting
   brier_cuts <- as.numeric(quantile(y, probs = brier_probs))
 
   process_fold <- function(fold) {
@@ -153,13 +153,13 @@ cv.cpmnet <- function(x, y, nfolds = 10, foldid = NULL,
     y_train <- y[train_idx]
     x_val <- x[val_idx, , drop = FALSE]
     y_val <- y[val_idx]
-    # fold fits are silent unless the caller passes verbose
+    # fold fits are silent
     fold_args <- c(list(x = x_train, y = y_train, lambda = lambda_path), dots)
     if (is.null(fold_args$verbose)) fold_args$verbose <- FALSE
     fit_fold <- do.call(cpmnet, fold_args)
     nlambda_fold <- length(fit_fold$lambda)
     if (type %in% c("mean", "median")) {
-      # predict.cpmnet always returns a matrix n_val x nlambda_fold
+      # returns n_val x nlambda_fold
       pred <- predict.cpmnet(fit_fold, newx = x_val, type = type, s = NULL)
       mae <- rep(NA_real_, nlambda)
       mse <- rep(NA_real_, nlambda)
@@ -284,7 +284,7 @@ cv.cpmnet <- function(x, y, nfolds = 10, foldid = NULL,
       class = "cv.cpmnet"
     )
   } else {
-    # single-criterion types: pinball_*, brier, loglik, psr_*
+    # single criterion types
     slot <- switch(type,
                    pinball_abs = "pinball", pinball_sq = "pinball",
                    brier = "brier", loglik = "negll", "psr")
@@ -301,9 +301,7 @@ cv.cpmnet <- function(x, y, nfolds = 10, foldid = NULL,
   }
 }
 
-# Shared validator for a probability grid and its weights (tau_levels /
-# tau_weights, brier_probs / brier_weights). Returns the weights,
-# defaulting to uniform.
+# validate a probability grid and weights
 #' @keywords internal
 #' @noRd
 .check_prob_grid <- function(values, weights, val_name, wt_name) {
@@ -341,10 +339,7 @@ cv.cpmnet <- function(x, y, nfolds = 10, foldid = NULL,
   weights
 }
 
-# Shared min + 1se lambda-index selection from a folds x nlambda matrix of
-# criterion values. maximize = TRUE flips the rule (pR2). With
-# allow_empty = TRUE an all-NA criterion returns NA indices instead of
-# stopping (pR2 under type = "median").
+# min and 1se lambda indices
 #' @keywords internal
 #' @noRd
 .cv_min_1se <- function(fold_mat, maximize = FALSE, allow_empty = FALSE) {
@@ -368,9 +363,7 @@ cv.cpmnet <- function(x, y, nfolds = 10, foldid = NULL,
   list(mean = m, se = se, opt_idx = opt_idx, ise_idx = ise_idx)
 }
 
-# Assemble the cv.cpmnet return object for the single-criterion types.
-# `extra` fields sit after `type` (tau_* for pinball, brier_* for brier,
-# none otherwise) so the element order is the same for every type.
+# assemble the return object
 #' @keywords internal
 #' @noRd
 .cv_result <- function(lambda_path, sel, fit_full, type, extra,

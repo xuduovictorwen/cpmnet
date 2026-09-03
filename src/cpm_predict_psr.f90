@@ -1,4 +1,4 @@
-! per-observation CDF lookup for PSR computation
+! per-observation CDF for PSR
 subroutine cpm_predict_psr(n, p, k, newx, alpha, beta, link_type, &
                            obs_idx, cdf_out, n_lambda)
   implicit none

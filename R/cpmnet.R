@@ -20,7 +20,10 @@
 #' @param nlambda number of lambda values when \code{lambda} is \code{NULL}.
 #'   Must be an integer >= 2.
 #' @param lambda_min_ratio ratio of \code{lambda.min} to \code{lambda.max}.
-#'   Defaults to \code{0.01} if \code{n < p}, \code{1e-4} otherwise.
+#'   Defaults by link and by \code{n} against \code{p}, since the fit separates
+#'   below the floor. For \code{"cauchit"}, \code{0.1} if \code{n < 1.5p},
+#'   \code{0.02} if \code{n < 4p}, \code{1e-4} otherwise. For the other four
+#'   links, \code{0.02} if \code{n < 1.5p}, \code{1e-4} otherwise.
 #'   Must be positive.
 #' @param lambda_max optional override for the maximum lambda. If
 #'   \code{NULL}, computed from the gradient at the intercept-only fit.
@@ -107,7 +110,7 @@ cpmnet <- function(x, y, family = "probit", lambda = NULL, alpha_en = 0.5,
                    tol = 1e-7, nulldev = NULL,
                    x_means = NULL, x_sds = NULL, verbose = TRUE, ...) {
 
-  # accept `alpha` as a synonym for `alpha_en` (glmnet ergonomics)
+  # alpha is a synonym for alpha_en
   dots <- list(...)
   if ("alpha" %in% names(dots)) {
     if (!missing(alpha_en)) {
@@ -163,7 +166,7 @@ cpmnet <- function(x, y, family = "probit", lambda = NULL, alpha_en = 0.5,
   data_prep <- cpm_data_prep(validated$x, validated$y, family,
                              validated$weights, standardize, x_means, x_sds)
 
-  # penalty_factor validation (need p from data_prep)
+  # penalty_factor validation
   if (!is.null(penalty_factor)) {
     if (!is.numeric(penalty_factor)) {
       stop("penalty_factor must be numeric; got class '",
@@ -201,7 +204,7 @@ cpmnet <- function(x, y, family = "probit", lambda = NULL, alpha_en = 0.5,
     if (is.null(lambda_max))
       lambda_max <- compute_lambda_max(data_prep, alpha_en)
     if (is.null(lambda_min_ratio))
-      lambda_min_ratio <- ifelse(data_prep$n < data_prep$p, 0.01, 1e-4)
+      lambda_min_ratio <- default_lambda_min_ratio(data_prep$n, data_prep$p, family)
     if (lambda_min_ratio == 0 && data_prep$n <= data_prep$p)
       stop("lambda_min_ratio = 0 not allowed when n <= p", call. = FALSE)
     lambda_path <- create_lambda_path(

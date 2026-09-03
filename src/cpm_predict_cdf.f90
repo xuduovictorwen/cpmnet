@@ -1,8 +1,5 @@
-! Conditional CDF at user thresholds: F(c | x_i) as a step function over
-! the training support y_mapping. One shared body for all five links; the
-! per-link CDF formula lives in link_cdf below. Every link must return
-! P(Y <= u_j) = 1 - G(alpha_j + x'beta), the same orientation for all
-! five (loglog and cloglog need their complements for this).
+! conditional CDF at user thresholds
+! link_cdf returns P(Y <= u_j)
 subroutine cpm_predict_cdf(n, p, k, newx, alpha, beta, y_mapping, &
                            link_type, thresholds, n_thresh, cdf_out, &
                            n_lambda)
@@ -55,7 +52,6 @@ subroutine cpm_predict_cdf(n, p, k, newx, alpha, beta, y_mapping, &
 
 contains
 
-  ! P(Y <= u_j | x) for eta = alpha_j + x'beta, by link.
   pure function link_cdf(eta) result(c)
     double precision, intent(in) :: eta
     double precision :: c

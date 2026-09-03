@@ -98,9 +98,7 @@ print.cv.cpmnet <- function(x, ...) {
   invisible(x)
 }
 
-# Two-row lambda-selection table shared by the print.cv.cpmnet branches.
-# idx holds the (min/opt, 1se) lambda indices; measure_fmt controls the
-# Measure column format (mean/median print %7.3f).
+# lambda selection table
 #' @keywords internal
 #' @noRd
 .print_cv_rows <- function(labels, lambdas, idx, cvm, cvsd, nzero,

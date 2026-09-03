@@ -48,7 +48,10 @@ down to \code{lambda_max * lambda_min_ratio}.}
 Must be an integer >= 2.}
 
 \item{lambda_min_ratio}{ratio of \code{lambda.min} to \code{lambda.max}.
-Defaults to \code{0.01} if \code{n < p}, \code{1e-4} otherwise.
+Defaults by link and by \code{n} against \code{p}, since the fit separates
+below the floor. For \code{"cauchit"}, \code{0.1} if \code{n < 1.5p},
+\code{0.02} if \code{n < 4p}, \code{1e-4} otherwise. For the other four
+links, \code{0.02} if \code{n < 1.5p}, \code{1e-4} otherwise.
 Must be positive.}
 
 \item{lambda_max}{optional override for the maximum lambda. If

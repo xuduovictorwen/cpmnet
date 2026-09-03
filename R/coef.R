@@ -115,9 +115,7 @@ coef.cv.cpmnet <- function(object, s = "lambda.min",
               include_alpha = include_alpha)
 }
 
-# Resolve a user-facing lambda spec (character or numeric, or NULL) into
-# a numeric lambda value (or NULL for full-path). Handles the per-type
-# name scheme used by cv.cpmnet.
+# resolve a lambda spec
 #' @keywords internal
 #' @noRd
 .cv_lookup_lambda <- function(object, s) {
@@ -127,7 +125,7 @@ coef.cv.cpmnet <- function(object, s = "lambda.min",
     if (length(s) != 1L) {
       stop("s must be a single string or number", call. = FALSE)
     }
-    # for mean/median, lambda.min / lambda.1se map to the MAE variant
+    # map to the MAE variant
     if (object$type %in% c("mean", "median")) {
       candidates <- list(
         "lambda.min"      = object$lambda.min.mae,

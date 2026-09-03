@@ -1,7 +1,4 @@
-! Conditional quantiles at user tau levels from the fitted CPM. One
-! shared body for all five links; the per-link CDF formula lives in
-! link_cdf below. Quantile lookup mirrors the median rule in
-! cpm_predict (midpoint at an exact tie within tol).
+! conditional quantiles at tau levels
 subroutine cpm_predict_quantile(n, p, k, newx, alpha, beta, y_mapping, &
                                 link_type, tau_levels, n_tau, predictions, &
                                 n_lambda, tol)
@@ -47,7 +44,6 @@ subroutine cpm_predict_quantile(n, p, k, newx, alpha, beta, y_mapping, &
 
 contains
 
-  ! P(Y <= u_j | x) for eta = alpha_j + x'beta, by link.
   pure function link_cdf(eta) result(c)
     double precision, intent(in) :: eta
     double precision :: c
