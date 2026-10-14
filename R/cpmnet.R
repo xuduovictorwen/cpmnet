@@ -1,17 +1,29 @@
 #' Fit a penalized (regularized) cumulative probability model
 #'
 #' Fits a cumulative probability model (CPM) with elastic net penalty
-#' along a penalization (regularization) path using coordinate descent. The core loop is
+#' along a penalization (regularization) path. The intercepts are updated
+#' together by a damped Newton step on their tridiagonal Hessian, and the
+#' coefficients by coordinate or group descent. The core loop is
 #' implemented in Fortran; R drives setup, standardization, and
 #' post-processing.
 #'
 #' @param x predictor matrix with \code{n} rows and \code{p} columns.
 #'   Must be numeric with no NA/NaN/Inf. Coerced to matrix if a data frame.
+#'   A column that takes a single value gets coefficient 0 and is left out
+#'   of the fit.
 #' @param y response vector of length \code{n}. Numeric, treated as
-#'   ordinal; ties are handled by ranking.
+#'   ordinal; ties are handled by ranking. Must take at least two values.
 #' @param family link function name. One of \code{"logistic"},
 #'   \code{"probit"}, \code{"loglog"}, \code{"cloglog"}, \code{"cauchit"}
 #'   (or any name in \code{names(rms::probabilityFamilies)}).
+#' @param group optional length-\code{p} vector assigning each column of
+#'   \code{x} to a group, so that a factor is penalized as one unit. Accepts a
+#'   factor, character or integer vector. Columns labelled \code{0} are left
+#'   unpenalized. \code{NULL}, the default, and any grouping in which every
+#'   penalized group holds a single column both give an elementwise penalty. A
+#'   grouping with any block of two or more columns centers and orthonormalizes
+#'   each block, so the penalty is on the factor's fitted contribution and does
+#'   not depend on which level was dropped.
 #' @param lambda optional user-supplied lambda sequence (decreasing).
 #'   If \code{NULL}, a path is computed automatically from \code{lambda_max}
 #'   down to \code{lambda_max * lambda_min_ratio}.
@@ -29,20 +41,31 @@
 #'   \code{NULL}, computed from the gradient at the intercept-only fit.
 #' @param weights observation weights (non-negative) of length \code{n}.
 #'   Defaults to uniform weights. Observations with weight 0 are dropped.
-#' @param penalty_factor per-predictor penalty multipliers of length \code{p}.
-#'   Non-negative; not all zero. Defaults to \code{rep(1, p)}.
+#'   Both cores center and scale the predictors with the weights.
+#' @param penalty_factor penalty multipliers, non-negative and not all zero:
+#'   one per column of \code{x}, or one per penalized group when \code{group}
+#'   holds a block of two or more columns. Defaults to 1 for each.
 #' @param adaptive if \code{TRUE} and \code{penalty_factor} is \code{NULL},
 #'   compute adaptive lasso weights from an unpenalized \code{rms::orm.fit}.
+#' @param core which solver to use when the penalty is elementwise. Both
+#'   minimize the same objective. \code{"group"}, the default, is faster on
+#'   logistic, probit and cauchit and slower on the two extreme value links.
+#'   \code{"elementwise"} updates one coefficient at a time. The two agree to
+#'   about 1e-7 on the four log concave links; on cauchit they can differ more,
+#'   because its objective is not convex and the two can reach different local
+#'   minima. A grouping with a block of two or more columns always uses the
+#'   grouped core.
 #' @param standardize if \code{TRUE}, standardize predictors to unit
 #'   variance before fitting and unstandardize coefficients at return.
-#' @param max_iter maximum outer iterations per lambda value.
+#' @param max_iter maximum outer iterations per lambda. Default 100000,
+#'   matching \pkg{glmnet}. A warning is issued if any lambda reaches it.
 #' @param tol convergence tolerance on max absolute parameter change.
 #' @param nulldev null deviance. Computed from intercept-only
 #'   \code{rms::orm.fit} if \code{NULL}.
 #' @param x_means optional precomputed column means for standardization.
 #' @param x_sds optional precomputed column standard deviations.
-#' @param verbose if \code{TRUE} (default), emit a warning when the
-#'   lambda path is truncated due to numerical issues.
+#' @param verbose if \code{TRUE} (default), warn when the path is truncated,
+#'   when a lambda does not converge, or when a constant column is dropped.
 #' @param ... additional arguments. The name \code{alpha} is accepted as
 #'   a synonym for \code{alpha_en} for glmnet-style ergonomics; other
 #'   names produce an error.
@@ -63,6 +86,8 @@
 #'   \item{converged, niter}{Per-lambda convergence flags and iteration counts.}
 #'   \item{nobs}{Number of observations after dropping zero-weight rows.}
 #'   \item{data_prep}{Internal prep bundle (used by \code{predict.cpmnet}).}
+#'   \item{constant_columns}{Indices of the columns of \code{x} that were
+#'     constant and left out of the fit, when there are any.}
 #'   \item{alpha_en, standardize, call}{Echo of arguments and the call.}
 #' }
 #'
@@ -103,14 +128,15 @@
 #' }
 #'
 #' @export
-cpmnet <- function(x, y, family = "probit", lambda = NULL, alpha_en = 0.5,
+cpmnet <- function(x, y, family = "probit", group = NULL,
+                   lambda = NULL, alpha_en = 0.5,
                    nlambda = 100, lambda_min_ratio = NULL, lambda_max = NULL,
                    weights = NULL, penalty_factor = NULL, adaptive = FALSE,
-                   standardize = TRUE, max_iter = 1000,
+                   standardize = TRUE, max_iter = 100000,
                    tol = 1e-7, nulldev = NULL,
-                   x_means = NULL, x_sds = NULL, verbose = TRUE, ...) {
+                   x_means = NULL, x_sds = NULL, core = c("group", "elementwise"),
+                   verbose = TRUE, ...) {
 
-  # alpha is a synonym for alpha_en
   dots <- list(...)
   if ("alpha" %in% names(dots)) {
     if (!missing(alpha_en)) {
@@ -127,9 +153,7 @@ cpmnet <- function(x, y, family = "probit", lambda = NULL, alpha_en = 0.5,
 
   validated <- validate_cpmnet_inputs(x, y, family, alpha_en, weights, lambda,
                                       standardize, adaptive)
-  lambda <- validated$lambda  # may have been sorted
 
-  # scalar hyperparameter checks
   if (!is.numeric(nlambda) || length(nlambda) != 1L ||
       !is.finite(nlambda) || nlambda != as.integer(nlambda) || nlambda < 2L) {
     stop("nlambda must be a single integer >= 2; got ", deparse(nlambda),
@@ -163,18 +187,13 @@ cpmnet <- function(x, y, family = "probit", lambda = NULL, alpha_en = 0.5,
          call. = FALSE)
   }
 
-  data_prep <- cpm_data_prep(validated$x, validated$y, family,
-                             validated$weights, standardize, x_means, x_sds)
+  core <- match.arg(core)
 
-  # penalty_factor validation
+  # one factor per column without a grouping, one per penalized group with one
   if (!is.null(penalty_factor)) {
     if (!is.numeric(penalty_factor)) {
       stop("penalty_factor must be numeric; got class '",
            paste(class(penalty_factor), collapse = "/"), "'", call. = FALSE)
-    }
-    if (length(penalty_factor) != data_prep$p) {
-      stop("length(penalty_factor) = ", length(penalty_factor),
-           " must equal p = ", data_prep$p, call. = FALSE)
     }
     if (any(!is.finite(penalty_factor))) {
       stop("penalty_factor must contain no NA/NaN/Inf", call. = FALSE)
@@ -188,6 +207,113 @@ cpmnet <- function(x, y, family = "probit", lambda = NULL, alpha_en = 0.5,
     }
   }
 
+  # adaptive weights, no standardization and supplied means or sds exist only in
+  # the elementwise core; a block of two or more columns needs the grouped one
+  elementwise_only <- adaptive || !standardize ||
+    !is.null(x_means) || !is.null(x_sds)
+  p <- ncol(validated$x)
+  gspec <- if (is.null(group)) NULL else normalize_group(group, p)
+  real_group <- !is.null(gspec) &&
+    (!gspec$all_singleton || gspec$n_unpenalized > 0L)
+
+  if (!is.null(penalty_factor)) {
+    np <- if (real_group) length(gspec$labels) else p
+    if (length(penalty_factor) != np) {
+      if (real_group) {
+        stop("penalty_factor must have length = number of groups (", np, ")",
+             call. = FALSE)
+      }
+      stop("length(penalty_factor) = ", length(penalty_factor),
+           " must equal p = ", np, call. = FALSE)
+    }
+  }
+
+  if (real_group && elementwise_only) {
+    stop("A grouping cannot be combined with adaptive, standardize = FALSE, ",
+         "x_means or x_sds; those belong to the elementwise core.",
+         call. = FALSE)
+  }
+
+  # a constant column has nothing to fit; it gets coefficient 0 and stays out
+  rows <- if (is.null(validated$weights)) TRUE else validated$weights > 0
+  varies <- apply(validated$x[rows, , drop = FALSE], 2, function(v) any(v != v[1]))
+  if (!any(varies)) {
+    stop("every column of x is constant, so there is nothing to fit", call. = FALSE)
+  }
+  x_fit <- validated$x
+  gspec_fit <- gspec
+  pf_fit <- penalty_factor
+  if (!all(varies)) {
+    if (verbose) {
+      warning(sprintf("%d constant column(s) of x get coefficient 0: %s",
+                      sum(!varies), paste(utils::head(which(!varies), 10), collapse = ", ")),
+              call. = FALSE)
+    }
+    x_fit <- validated$x[, varies, drop = FALSE]
+    if (!is.null(x_means)) x_means <- x_means[varies]
+    if (!is.null(x_sds)) x_sds <- x_sds[varies]
+    if (!is.null(gspec)) gspec_fit <- normalize_group(group[varies], sum(varies))
+    if (!is.null(penalty_factor)) {
+      pf_fit <- if (real_group) penalty_factor[match(gspec_fit$labels, gspec$labels)]
+                else penalty_factor[varies]
+      if (all(pf_fit == 0)) {
+        stop("every penalized column of x is constant", call. = FALSE)
+      }
+    }
+  }
+
+  if (real_group || (core == "group" && !elementwise_only)) {
+    gid <- if (is.null(gspec_fit)) seq_len(ncol(x_fit)) else gspec_fit$gid
+    attr(gid, "labels") <- if (is.null(gspec_fit)) NULL else gspec_fit$labels
+    fit <- cpmnet_group_path(
+      x = x_fit, y = validated$y, gid = gid, family = family,
+      alpha_en = alpha_en, lambda = validated$lambda, nlambda = nlambda,
+      lambda_min_ratio = lambda_min_ratio, lambda_max = lambda_max,
+      penalty_factor = pf_fit, weights = validated$weights,
+      max_iter = as.integer(max_iter), tol = tol, nulldev = nulldev,
+      verbose = verbose, mc = match.call())
+  } else {
+    fit <- cpmnet_elementwise_path(
+      x = x_fit, y = validated$y, family = family, alpha_en = alpha_en,
+      lambda = validated$lambda, nlambda = nlambda,
+      lambda_min_ratio = lambda_min_ratio, lambda_max = lambda_max,
+      weights = validated$weights, penalty_factor = pf_fit, adaptive = adaptive,
+      standardize = standardize, max_iter = as.integer(max_iter), tol = tol,
+      nulldev = nulldev, x_means = x_means, x_sds = x_sds, verbose = verbose,
+      mc = match.call())
+  }
+
+  if (!all(varies)) {
+    nl <- length(fit$lambda)
+    beta <- matrix(0, p, nl)
+    beta[varies, ] <- fit$beta
+    fit$beta <- beta
+    if (is.null(fit$group)) {
+      bs <- matrix(0, p, nl)
+      bs[varies, ] <- fit$beta_scaled
+      fit$beta_scaled <- bs
+    } else {
+      gid <- if (is.null(gspec)) seq_len(p) else gspec$gid
+      attr(gid, "labels") <- if (is.null(gspec)) NULL else gspec$labels
+      fit$group <- gid
+      fit$group_labels <- attr(gid, "labels")
+    }
+    fit$dim <- c(p, nl)
+    fit$constant_columns <- which(!varies)
+  }
+  fit
+}
+
+# the elementwise path, one coefficient at a time
+#' @keywords internal
+#' @noRd
+cpmnet_elementwise_path <- function(x, y, family, alpha_en, lambda, nlambda,
+                                    lambda_min_ratio, lambda_max, weights,
+                                    penalty_factor, adaptive, standardize,
+                                    max_iter, tol, nulldev, x_means, x_sds,
+                                    verbose, mc) {
+  data_prep <- cpm_data_prep(x, y, family, weights, standardize, x_means, x_sds)
+
   if (adaptive && is.null(penalty_factor)) {
     orm_fit <- rms::orm.fit(
       x = data_prep$x,
@@ -200,9 +326,14 @@ cpmnet <- function(x, y, family = "probit", lambda = NULL, alpha_en = 0.5,
   if (is.null(penalty_factor)) penalty_factor <- rep(1.0, data_prep$p)
   storage.mode(penalty_factor) <- "double"
 
+  first_null <- FALSE
   if (is.null(lambda)) {
+    # at a computed lambda_max every coefficient is zero; a floored alpha_en or an
+    # unpenalized column breaks that
+    first_null <- is.null(lambda_max) && alpha_en >= .CPMNET_LAMBDA_MAX_ALPHA_FLOOR &&
+      all(penalty_factor > 0)
     if (is.null(lambda_max))
-      lambda_max <- compute_lambda_max(data_prep, alpha_en)
+      lambda_max <- compute_lambda_max(data_prep, alpha_en, penalty_factor)
     if (is.null(lambda_min_ratio))
       lambda_min_ratio <- default_lambda_min_ratio(data_prep$n, data_prep$p, family)
     if (lambda_min_ratio == 0 && data_prep$n <= data_prep$p)
@@ -213,77 +344,50 @@ cpmnet <- function(x, y, family = "probit", lambda = NULL, alpha_en = 0.5,
     lambda_path <- sort(lambda, decreasing = TRUE)
   }
   nlambda <- length(lambda_path)
+  # rounding at lambda_max can leave a coefficient near 1e-15, so the first fit takes a
+  # far larger penalty and keeps every coefficient exactly zero, as glmnet does
+  lambda_fit <- lambda_path
+  if (first_null) lambda_fit[1] <- 1e10 * lambda_path[1]
 
-  fit_result <- .Fortran("ormll_path_enet",
-                         n = data_prep$n,
-                         k = data_prep$k,
-                         p = data_prep$p,
-                         x = data_prep$x,
-                         y = data_prep$y,
-                         wt = data_prep$wt,
-                         link = data_prep$link,
-                         nlambda = as.integer(nlambda),
-                         lambda_path = lambda_path,
-                         alpha_en = alpha_en,
-                         penalty_factor = penalty_factor,
-                         alpha_init = data_prep$alpha_init,
-                         beta_init = data_prep$beta_init,
-                         max_iter_outer = as.integer(max_iter),
-                         tol = tol,
-                         alpha_mat = matrix(0.0, data_prep$k, nlambda),
-                         beta_mat = matrix(0.0, data_prep$p, nlambda),
-                         logL = numeric(nlambda),
-                         converged = logical(nlambda),
-                         niter = integer(nlambda),
-                         salloc = integer(1),
-                         PACKAGE = "cpmnet")
+  res <- .Fortran("ormll_path_enet",
+                  n = data_prep$n,
+                  k = data_prep$k,
+                  p = data_prep$p,
+                  x = data_prep$x,
+                  y = data_prep$y,
+                  wt = data_prep$wt,
+                  link = data_prep$link,
+                  nlambda = as.integer(nlambda),
+                  lambda_path = lambda_fit,
+                  alpha_en = alpha_en,
+                  penalty_factor = penalty_factor,
+                  alpha_init = data_prep$alpha_init,
+                  beta_init = data_prep$beta_init,
+                  max_iter_outer = as.integer(max_iter),
+                  tol = tol,
+                  alpha_mat = matrix(0.0, data_prep$k, nlambda),
+                  beta_mat = matrix(0.0, data_prep$p, nlambda),
+                  logL = numeric(nlambda),
+                  converged = logical(nlambda),
+                  niter = integer(nlambda),
+                  salloc = integer(1),
+                  shuffle_seed = .cpmnet_shuffle_seed(),
+                  PACKAGE = "cpmnet")
+  st <- .path_status(res, lambda_path, max_iter, verbose, "ormll_path_enet")
+  res <- st$res
+  lambda_path <- st$lambda
+  nlambda <- length(lambda_path)
 
-  if (fit_result$salloc != 0) {
-    if (fit_result$salloc >= 1000) {
-      stop("Singular Hessian in Fortran tridiagonal solve at alpha index ",
-           fit_result$salloc - 1000L,
-           ". This usually means degenerate y (near-collinear intercepts) or",
-           " an ill-conditioned design. Try increasing lambda_min_ratio or",
-           " removing near-constant predictors.", call. = FALSE)
-    }
-    stop("Fortran allocation failed in ormll_path_enet (salloc = ",
-         fit_result$salloc, ")", call. = FALSE)
-  }
+  df <- colSums(res$beta_mat != 0)
 
-  # truncate path at first NaN
-  nan_lambda <- apply(fit_result$alpha_mat, 2, function(col) any(!is.finite(col))) |
-                apply(fit_result$beta_mat, 2, function(col) any(!is.finite(col)))
-
-  if (any(nan_lambda)) {
-    first_nan <- which(nan_lambda)[1]
-    valid_idx <- seq_len(first_nan - 1)
-    if (length(valid_idx) == 0)
-      stop("Numerical issues at all lambda values. Try increasing lambda_min_ratio.",
-           call. = FALSE)
-    if (verbose) {
-      warning(sprintf("Numerical issues at %d lambda value(s). Path truncated to %d lambdas.",
-                      sum(nan_lambda), length(valid_idx)), call. = FALSE)
-    }
-    fit_result$alpha_mat <- fit_result$alpha_mat[, valid_idx, drop = FALSE]
-    fit_result$beta_mat  <- fit_result$beta_mat[, valid_idx, drop = FALSE]
-    fit_result$logL      <- fit_result$logL[valid_idx]
-    fit_result$converged <- fit_result$converged[valid_idx]
-    fit_result$niter     <- fit_result$niter[valid_idx]
-    lambda_path <- lambda_path[valid_idx]
-    nlambda <- length(valid_idx)
-  }
-
-  df <- colSums(fit_result$beta_mat != 0)
-
-  # unstandardize
   if (standardize) {
-    beta_mat <- fit_result$beta_mat / data_prep$x_sds
+    beta_mat <- res$beta_mat / data_prep$x_sds
     adjustment <- as.numeric(crossprod(data_prep$x_means, beta_mat))
-    alpha_mat <- fit_result$alpha_mat -
+    alpha_mat <- res$alpha_mat -
       matrix(adjustment, nrow = data_prep$k, ncol = nlambda, byrow = TRUE)
   } else {
-    beta_mat  <- fit_result$beta_mat
-    alpha_mat <- fit_result$alpha_mat
+    beta_mat  <- res$beta_mat
+    alpha_mat <- res$alpha_mat
   }
 
   if (is.null(nulldev)) {
@@ -297,21 +401,21 @@ cpmnet <- function(x, y, family = "probit", lambda = NULL, alpha_en = 0.5,
     list(
       alpha       = alpha_mat,
       beta        = beta_mat,
-      alpha_scaled = fit_result$alpha_mat,
-      beta_scaled  = fit_result$beta_mat,
+      alpha_scaled = res$alpha_mat,
+      beta_scaled  = res$beta_mat,
       df          = df,
       dim         = c(data_prep$p, nlambda),
       lambda      = lambda_path,
-      dev.ratio   = pmax(0, 1 - fit_result$logL / nulldev),
+      dev.ratio   = pmax(0, 1 - res$logL / nulldev),
       nulldev     = nulldev,
-      logL        = fit_result$logL,
-      converged   = fit_result$converged,
-      niter       = fit_result$niter,
+      logL        = res$logL,
+      converged   = res$converged,
+      niter       = res$niter,
       nobs        = data_prep$n,
       data_prep   = data_prep,
       alpha_en    = alpha_en,
       standardize = standardize,
-      call        = match.call()
+      call        = mc
     ),
     class = "cpmnet"
   )

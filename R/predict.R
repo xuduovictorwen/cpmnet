@@ -8,7 +8,6 @@
          paste(class(object), collapse = "/"), "'", call. = FALSE)
   }
 
-  # coerce newx
   if (is.vector(newx) && !is.matrix(newx)) newx <- matrix(newx, nrow = 1)
   if (!is.matrix(newx)) newx <- as.matrix(newx)
   if (!is.numeric(newx)) {
@@ -25,7 +24,6 @@
          expected_p, ")", call. = FALSE)
   }
 
-  # select lambda indices
   if (is.null(s)) {
     lambda_indices <- seq_along(object$lambda)
   } else {
@@ -72,7 +70,15 @@
 #' @param object fitted \code{"cpmnet"} object.
 #' @param newx predictor matrix for new observations. A numeric vector is
 #'   interpreted as a single observation (1 x p).
-#' @param type either \code{"median"} (default) or \code{"mean"}.
+#' @param type one of \code{"median"} (default) and \code{"mean"}, which
+#'   predict the outcome and need \code{newx}, or one of the structural
+#'   summaries, which describe the fit and need no \code{newx}:
+#'   \code{"vars"} gives the indices of the nonzero coefficients,
+#'   \code{"nvars"} their count, \code{"groups"} the labels of the groups
+#'   holding at least one nonzero coefficient, \code{"ngroups"} their count,
+#'   and \code{"norm"} the length of each group's coefficients. The
+#'   structural names follow \pkg{grpreg} and \pkg{grpnet}. On a fit made
+#'   without \code{group}, every column is its own group.
 #' @param s optional single lambda value at which to predict. If
 #'   \code{NULL}, predictions are returned for every lambda in
 #'   \code{object$lambda}. If outside the fitted range, the nearest
@@ -103,9 +109,20 @@
 #' }
 #'
 #' @export
-predict.cpmnet <- function(object, newx, type = c("median", "mean"),
+predict.cpmnet <- function(object, newx = NULL, type = c("median", "mean",
+                                                  "vars", "groups", "nvars",
+                                                  "ngroups", "norm"),
                            s = NULL, tol = 1e-10, ...) {
   type <- match.arg(type)
+
+  # structural types describe the fit and need no newx
+  if (type %in% c("vars", "groups", "nvars", "ngroups", "norm")) {
+    return(cpmnet_structure(object, type, s))
+  }
+
+  if (is.null(newx)) {
+    stop("newx is required for type = \"", type, "\"", call. = FALSE)
+  }
   pred_type <- if (type == "median") 1L else 2L
   args <- .prepare_predict_args(object, newx, s)
   result <- .Fortran("cpm_predict",
@@ -118,7 +135,7 @@ predict.cpmnet <- function(object, newx, type = c("median", "mean"),
                      pred_type = pred_type,
                      predictions = matrix(0.0, args$n_obs, args$n_lambda),
                      n_lambda = as.integer(args$n_lambda),
-                     tol = as.double(tol))
+                     tol = as.double(tol), PACKAGE = "cpmnet")
   predictions <- result$predictions
   colnames(predictions) <- paste0("s", args$lambda_indices, "=",
                                   round(object$lambda[args$lambda_indices], 4))
@@ -178,7 +195,6 @@ predict.cv.cpmnet <- function(object, newx, s = "lambda.min",
 #' @noRd
 predict_quantile_cpmnet <- function(object, newx, s = NULL, tau_levels,
                                     tol = 1e-10) {
-  # tau_levels validation
   if (!is.numeric(tau_levels) || length(tau_levels) == 0L) {
     stop("tau_levels must be a non-empty numeric vector", call. = FALSE)
   }
@@ -207,11 +223,11 @@ predict_quantile_cpmnet <- function(object, newx, s = NULL, tau_levels,
                      predictions = array(0.0,
                                          dim = c(args$n_obs, args$n_lambda, n_tau)),
                      n_lambda = as.integer(args$n_lambda),
-                     tol = as.double(tol))
+                     tol = as.double(tol), PACKAGE = "cpmnet")
   result$predictions
 }
 
-# per-observation CDF for PSR
+# CDF at each observation's own category
 #' @keywords internal
 #' @noRd
 predict_psr_cpmnet <- function(object, newx, y_test, s = NULL) {
@@ -270,7 +286,7 @@ predict_psr_cpmnet <- function(object, newx, y_test, s = NULL) {
            link_type = as.integer(args$link_type),
            obs_idx = as.integer(obs_idx),
            cdf_out = matrix(0.0, args$n_obs, args$n_lambda),
-           n_lambda = as.integer(args$n_lambda))$cdf_out
+           n_lambda = as.integer(args$n_lambda), PACKAGE = "cpmnet")$cdf_out
 }
 
 # category mass at the observed y
@@ -309,6 +325,34 @@ predict_cdf_cpmnet <- function(object, newx, s = NULL, thresholds) {
                      n_thresh = as.integer(n_thresh),
                      cdf_out = array(0.0,
                                      dim = c(args$n_obs, args$n_lambda, n_thresh)),
-                     n_lambda = as.integer(args$n_lambda))
+                     n_lambda = as.integer(args$n_lambda), PACKAGE = "cpmnet")
   result$cdf_out
+}
+
+
+# which columns and groups are in, how many, and each group's coefficient length
+#' @keywords internal
+#' @noRd
+cpmnet_structure <- function(object, type, s = NULL) {
+  idx <- if (is.null(s)) seq_along(object$lambda) else
+    vapply(s, function(v) which.min(abs(object$lambda - v)), integer(1))
+  beta <- object$beta[, idx, drop = FALSE]
+  gid <- object$group
+  if (is.null(gid)) gid <- seq_len(nrow(object$beta))
+  labs <- attr(object$group, "labels")
+  ug <- setdiff(sort(unique(gid)), 0L)
+  gname <- if (!is.null(labs) && length(labs) == length(ug)) labs else as.character(ug)
+
+  gnorm <- vapply(seq_along(idx), function(j)
+    vapply(seq_along(ug), function(g)
+      sqrt(sum(beta[gid == ug[g], j]^2)), numeric(1)), numeric(length(ug)))
+  gnorm <- matrix(gnorm, nrow = length(ug),
+                  dimnames = list(gname, names(idx)))
+
+  switch(type,
+    vars    = lapply(seq_along(idx), function(j) which(beta[, j] != 0)),
+    nvars   = colSums(beta != 0),
+    groups  = lapply(seq_along(idx), function(j) gname[gnorm[, j] > 0]),
+    ngroups = { v <- colSums(gnorm > 0); storage.mode(v) <- "integer"; v },
+    norm    = gnorm)
 }

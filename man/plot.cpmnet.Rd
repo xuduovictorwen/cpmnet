@@ -4,7 +4,13 @@
 \alias{plot.cpmnet}
 \title{Plot coefficient paths from a cpmnet fit}
 \usage{
-\method{plot}{cpmnet}(x, xvar = c("lambda", "norm", "dev"), label = FALSE, ...)
+\method{plot}{cpmnet}(
+  x,
+  xvar = c("lambda", "norm", "dev"),
+  label = FALSE,
+  group_norm = FALSE,
+  ...
+)
 }
 \arguments{
 \item{x}{fitted \code{"cpmnet"} object.}
@@ -15,6 +21,9 @@
 
 \item{label}{if \code{TRUE}, label nonzero coefficients at the
 rightmost point with their predictor index.}
+
+\item{group_norm}{if \code{TRUE}, plot one line per group, the length of
+that group's coefficients, instead of one line per column.}
 
 \item{...}{passed to \code{\link[graphics]{plot}}.}
 }

@@ -70,6 +70,8 @@ test_that("user-supplied lambda is honoured exactly", {
 
 test_that("alpha synonym is accepted and matches alpha_en", {
   dat <- sim_cpm()
+  # the visiting order is drawn fresh per fit, so pin it to compare the two fits
+  old <- options(cpmnet.shuffle_seed = 1L); on.exit(options(old))
   fit1 <- cpmnet(dat$x, dat$y, family = "probit", alpha_en = 0.3,
                  nlambda = 8, verbose = FALSE)
   fit2 <- cpmnet(dat$x, dat$y, family = "probit", alpha = 0.3,

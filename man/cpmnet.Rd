@@ -8,6 +8,7 @@ cpmnet(
   x,
   y,
   family = "probit",
+  group = NULL,
   lambda = NULL,
   alpha_en = 0.5,
   nlambda = 100,
@@ -17,25 +18,37 @@ cpmnet(
   penalty_factor = NULL,
   adaptive = FALSE,
   standardize = TRUE,
-  max_iter = 1000,
+  max_iter = 1e+05,
   tol = 1e-07,
   nulldev = NULL,
   x_means = NULL,
   x_sds = NULL,
+  core = c("group", "elementwise"),
   verbose = TRUE,
   ...
 )
 }
 \arguments{
 \item{x}{predictor matrix with \code{n} rows and \code{p} columns.
-Must be numeric with no NA/NaN/Inf. Coerced to matrix if a data frame.}
+Must be numeric with no NA/NaN/Inf. Coerced to matrix if a data frame.
+A column that takes a single value gets coefficient 0 and is left out
+of the fit.}
 
 \item{y}{response vector of length \code{n}. Numeric, treated as
-ordinal; ties are handled by ranking.}
+ordinal; ties are handled by ranking. Must take at least two values.}
 
 \item{family}{link function name. One of \code{"logistic"},
 \code{"probit"}, \code{"loglog"}, \code{"cloglog"}, \code{"cauchit"}
 (or any name in \code{names(rms::probabilityFamilies)}).}
+
+\item{group}{optional length-\code{p} vector assigning each column of
+\code{x} to a group, so that a factor is penalized as one unit. Accepts a
+factor, character or integer vector. Columns labelled \code{0} are left
+unpenalized. \code{NULL}, the default, and any grouping in which every
+penalized group holds a single column both give an elementwise penalty. A
+grouping with any block of two or more columns centers and orthonormalizes
+each block, so the penalty is on the factor's fitted contribution and does
+not depend on which level was dropped.}
 
 \item{lambda}{optional user-supplied lambda sequence (decreasing).
 If \code{NULL}, a path is computed automatically from \code{lambda_max}
@@ -58,10 +71,12 @@ Must be positive.}
 \code{NULL}, computed from the gradient at the intercept-only fit.}
 
 \item{weights}{observation weights (non-negative) of length \code{n}.
-Defaults to uniform weights. Observations with weight 0 are dropped.}
+Defaults to uniform weights. Observations with weight 0 are dropped.
+Both cores center and scale the predictors with the weights.}
 
-\item{penalty_factor}{per-predictor penalty multipliers of length \code{p}.
-Non-negative; not all zero. Defaults to \code{rep(1, p)}.}
+\item{penalty_factor}{penalty multipliers, non-negative and not all zero:
+one per column of \code{x}, or one per penalized group when \code{group}
+holds a block of two or more columns. Defaults to 1 for each.}
 
 \item{adaptive}{if \code{TRUE} and \code{penalty_factor} is \code{NULL},
 compute adaptive lasso weights from an unpenalized \code{rms::orm.fit}.}
@@ -69,7 +84,8 @@ compute adaptive lasso weights from an unpenalized \code{rms::orm.fit}.}
 \item{standardize}{if \code{TRUE}, standardize predictors to unit
 variance before fitting and unstandardize coefficients at return.}
 
-\item{max_iter}{maximum outer iterations per lambda value.}
+\item{max_iter}{maximum outer iterations per lambda. Default 100000,
+matching \pkg{glmnet}. A warning is issued if any lambda reaches it.}
 
 \item{tol}{convergence tolerance on max absolute parameter change.}
 
@@ -80,8 +96,17 @@ variance before fitting and unstandardize coefficients at return.}
 
 \item{x_sds}{optional precomputed column standard deviations.}
 
-\item{verbose}{if \code{TRUE} (default), emit a warning when the
-lambda path is truncated due to numerical issues.}
+\item{core}{which solver to use when the penalty is elementwise. Both
+minimize the same objective. \code{"group"}, the default, is faster on
+logistic, probit and cauchit and slower on the two extreme value links.
+\code{"elementwise"} updates one coefficient at a time. The two agree to
+about 1e-7 on the four log concave links; on cauchit they can differ more,
+because its objective is not convex and the two can reach different local
+minima. A grouping with a block of two or more columns always uses the
+grouped core.}
+
+\item{verbose}{if \code{TRUE} (default), warn when the path is truncated,
+when a lambda does not converge, or when a constant column is dropped.}
 
 \item{...}{additional arguments. The name \code{alpha} is accepted as
 a synonym for \code{alpha_en} for glmnet-style ergonomics; other
@@ -104,12 +129,16 @@ An object of class \code{"cpmnet"}: a list with components
   \item{converged, niter}{Per-lambda convergence flags and iteration counts.}
   \item{nobs}{Number of observations after dropping zero-weight rows.}
   \item{data_prep}{Internal prep bundle (used by \code{predict.cpmnet}).}
+  \item{constant_columns}{Indices of the columns of \code{x} that were
+    constant and left out of the fit, when there are any.}
   \item{alpha_en, standardize, call}{Echo of arguments and the call.}
 }
 }
 \description{
 Fits a cumulative probability model (CPM) with elastic net penalty
-along a penalization (regularization) path using coordinate descent. The core loop is
+along a penalization (regularization) path. The intercepts are updated
+together by a damped Newton step on their tridiagonal Hessian, and the
+coefficients by coordinate or group descent. The core loop is
 implemented in Fortran; R drives setup, standardization, and
 post-processing.
 }

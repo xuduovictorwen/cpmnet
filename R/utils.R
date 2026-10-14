@@ -9,7 +9,6 @@
 validate_cpmnet_inputs <- function(x, y, family, alpha_en, weights, lambda,
                                    standardize = TRUE, adaptive = FALSE) {
 
-  # coerce x, check numeric and finite
   if (!is.matrix(x)) x <- as.matrix(x)
   if (!is.numeric(x)) {
     stop("x must be a numeric matrix; got storage.mode '", storage.mode(x), "'",
@@ -25,7 +24,6 @@ validate_cpmnet_inputs <- function(x, y, family, alpha_en, weights, lambda,
          call. = FALSE)
   }
 
-  # y numeric and finite
   if (!is.numeric(y)) {
     stop("y must be a numeric vector; got class '", paste(class(y), collapse = "/"),
          "'", call. = FALSE)
@@ -37,13 +35,11 @@ validate_cpmnet_inputs <- function(x, y, family, alpha_en, weights, lambda,
          call. = FALSE)
   }
 
-  # dimensional compatibility
   if (nrow(x) != length(y)) {
     stop("length(y) = ", length(y), " must equal nrow(x) = ", nrow(x),
          call. = FALSE)
   }
 
-  # alpha_en in [0, 1]
   if (!is.numeric(alpha_en) || length(alpha_en) != 1L || !is.finite(alpha_en)) {
     stop("alpha_en must be a single finite numeric value; got ",
          deparse(alpha_en), call. = FALSE)
@@ -52,7 +48,6 @@ validate_cpmnet_inputs <- function(x, y, family, alpha_en, weights, lambda,
     stop("alpha_en must be in [0, 1]; got ", alpha_en, call. = FALSE)
   }
 
-  # family
   valid_families <- names(rms::probabilityFamilies)
   if (!is.character(family) || length(family) != 1L) {
     stop("family must be a single character string; got ",
@@ -63,7 +58,6 @@ validate_cpmnet_inputs <- function(x, y, family, alpha_en, weights, lambda,
          "; got '", family, "'", call. = FALSE)
   }
 
-  # weights
   if (!is.null(weights)) {
     if (!is.numeric(weights)) {
       stop("weights must be numeric; got class '",
@@ -85,7 +79,6 @@ validate_cpmnet_inputs <- function(x, y, family, alpha_en, weights, lambda,
     }
   }
 
-  # lambda
   if (!is.null(lambda)) {
     if (!is.numeric(lambda)) {
       stop("lambda must be numeric; got class '",
@@ -104,7 +97,6 @@ validate_cpmnet_inputs <- function(x, y, family, alpha_en, weights, lambda,
     }
   }
 
-  # standardize and adaptive flags
   if (!is.logical(standardize) || length(standardize) != 1L || is.na(standardize)) {
     stop("standardize must be a single TRUE/FALSE; got ",
          deparse(standardize), call. = FALSE)
@@ -117,11 +109,11 @@ validate_cpmnet_inputs <- function(x, y, family, alpha_en, weights, lambda,
   list(x = x, y = y, weights = weights, lambda = lambda)
 }
 
+# drop zero weight rows, code y as categories 0..k, and set the intercepts of the
+# model with no predictors, in the rms orientation
 #' @keywords internal
 #' @noRd
-cpm_data_prep <- function(x, y, family, weights, standardize,
-                          x_means = NULL, x_sds = NULL) {
-
+cpm_prep_y <- function(x, y, family, weights) {
   wt <- if (is.null(weights)) rep(1.0, length(y)) else weights
   if (any(wt == 0)) {
     active <- wt > 0
@@ -129,15 +121,34 @@ cpm_data_prep <- function(x, y, family, weights, standardize,
     y <- y[active]
     wt <- wt[active]
   }
-
   # rms::recode2integer is not exported
-  recode_result <- rms:::recode2integer(y, precision = 7)
-  y_mapping <- recode_result$ylevels
-  y_int <- recode_result$y - 1L
+  recoded <- rms:::recode2integer(y, precision = 7)
+  y_int <- recoded$y - 1L
+  k <- max(y_int)
+  if (k < 1L) {
+    stop("y takes a single value (to 7 significant digits); a cumulative ",
+         "probability model needs at least two", call. = FALSE)
+  }
+  sumwty <- tapply(wt, y_int, sum)
+  cum_probs <- rev(cumsum(rev(sumwty)))[2:(k + 1)] / sum(sumwty)
+  finverse <- eval(rms::probabilityFamilies[[family]][2])
+  list(x = x, y = y_int, wt = wt, k = k, y_mapping = recoded$ylevels,
+       link = match(family, names(rms::probabilityFamilies)),
+       alpha_init = finverse(cum_probs))
+}
 
+#' @keywords internal
+#' @noRd
+cpm_data_prep <- function(x, y, family, weights, standardize,
+                          x_means = NULL, x_sds = NULL) {
+
+  prep <- cpm_prep_y(x, y, family, weights)
+  x <- prep$x
+  wt <- prep$wt
+  y_int <- prep$y
+  k <- prep$k
   n <- length(y_int)
   p <- ncol(x)
-  k <- max(y_int)
 
   if (standardize) {
     if (!is.null(x_means) && !is.null(x_sds)) {
@@ -162,13 +173,7 @@ cpm_data_prep <- function(x, y, family, weights, standardize,
     if (is.null(x_sds)) x_sds <- rep(1, p)
   }
 
-  link <- match(family, names(rms::probabilityFamilies))
-  sumwty <- tapply(wt, y_int, sum)
-  cum_probs <- rev(cumsum(rev(sumwty)))[2:(k + 1)] / sum(sumwty)
-  finverse <- eval(rms::probabilityFamilies[[family]][2])
-  alpha_init <- finverse(cum_probs)
-  if (any(!is.finite(alpha_init))) alpha_init <- seq(-2, 2, length.out = k)
-
+  link <- prep$link
   storage.mode(x) <- "double"
   storage.mode(y_int) <- "integer"
   storage.mode(wt) <- "double"
@@ -178,8 +183,8 @@ cpm_data_prep <- function(x, y, family, weights, standardize,
   storage.mode(link) <- "integer"
 
   list(x = x, y = y_int, wt = wt, n = n, p = p, k = k, link = link,
-       alpha_init = alpha_init, beta_init = rep(0, p),
-       x_means = x_means, x_sds = x_sds, y_mapping = y_mapping)
+       alpha_init = prep$alpha_init, beta_init = rep(0, p),
+       x_means = x_means, x_sds = x_sds, y_mapping = prep$y_mapping)
 }
 
 # grid floor, the fit separates below it
@@ -204,22 +209,77 @@ create_lambda_path <- function(lambda_max, lambda_min, nlambda) {
   exp(seq(log(lambda_max), log(lambda_min), length.out = nlambda))
 }
 
+# the smallest lambda at which every penalized coefficient is zero
 #' @keywords internal
 #' @noRd
-compute_lambda_max <- function(data_prep, alpha_en = 1) {
-  fortran_fit <- .Fortran("ormll_beta_ccd_enet",
-                          data_prep$n, data_prep$k, data_prep$p,
-                          data_prep$x, data_prep$y, data_prep$wt,
-                          link = data_prep$link,
-                          data_prep$alpha_init, rep(0.0, data_prep$p),
-                          lambda = 0.0, alpha_en = alpha_en,
-                          logL = numeric(1),
-                          u = numeric(data_prep$p),
-                          hb = numeric(data_prep$p),
-                          salloc = integer(1),
-                          PACKAGE = "cpmnet")
-  if (fortran_fit$salloc != 0) stop("Fortran allocation failed in compute_lambda_max",
-                                    call. = FALSE)
-  alpha_for_max <- max(alpha_en, .CPMNET_LAMBDA_MAX_ALPHA_FLOOR)
-  max(abs(fortran_fit$u)) / alpha_for_max
+compute_lambda_max <- function(data_prep, alpha_en, penalty_factor) {
+  res <- .Fortran("cpm_lambda_max_grad",
+                  data_prep$n, data_prep$k, data_prep$p,
+                  data_prep$x, data_prep$y, data_prep$wt, data_prep$link,
+                  data_prep$alpha_init,
+                  u = numeric(data_prep$p), salloc = integer(1),
+                  PACKAGE = "cpmnet")
+  if (res$salloc != 0) stop("Fortran allocation failed in compute_lambda_max",
+                            call. = FALSE)
+  pen <- penalty_factor > 0
+  max(abs(res$u[pen]) / penalty_factor[pen]) /
+    max(alpha_en, .CPMNET_LAMBDA_MAX_ALPHA_FLOOR)
+}
+
+# after a Fortran path: stop on an allocation failure, keep the lambdas fitted before
+# a singular intercept Hessian or a non-finite estimate, and report non-convergence
+#' @keywords internal
+#' @noRd
+.path_status <- function(res, lambda, max_iter, verbose, routine) {
+  if (res$salloc != 0 && res$salloc < 1000) {
+    stop("Fortran allocation failed in ", routine, " (salloc = ", res$salloc, ")",
+         call. = FALSE)
+  }
+  nl <- length(lambda)
+  ok <- if (res$salloc >= 1000) which(res$niter < 0)[1] - 1L else nl
+  keep <- seq_len(ok)
+  bad <- apply(res$alpha_mat[, keep, drop = FALSE], 2, function(v) any(!is.finite(v))) |
+         apply(res$beta_mat[, keep, drop = FALSE], 2, function(v) any(!is.finite(v)))
+  if (any(bad)) ok <- which(bad)[1] - 1L
+  if (ok == 0L) {
+    if (res$salloc >= 1000) {
+      stop("The intercept Hessian is singular at the first lambda (intercept ",
+           res$salloc - 1000L, "). This usually means a nearly separable fit or ",
+           "near-collinear intercepts. Try a larger lambda_min_ratio or remove ",
+           "near-constant predictors.", call. = FALSE)
+    }
+    stop("Numerical issues at all lambda values. Try increasing lambda_min_ratio.",
+         call. = FALSE)
+  }
+  if (ok < nl) {
+    if (verbose) {
+      why <- if (res$salloc >= 1000 && !any(bad)) "The intercept Hessian became singular"
+             else "Numerical issues arose"
+      warning(sprintf("%s at lambda %d of %d. Path truncated to %d lambdas.",
+                      why, ok + 1L, nl, ok), call. = FALSE)
+    }
+    keep <- seq_len(ok)
+    res$alpha_mat <- res$alpha_mat[, keep, drop = FALSE]
+    res$beta_mat  <- res$beta_mat[, keep, drop = FALSE]
+    res$logL      <- res$logL[keep]
+    res$converged <- res$converged[keep]
+    res$niter     <- res$niter[keep]
+    lambda <- lambda[keep]
+  }
+  # a capped fit returns coefficients with no error, so the flag is the only signal
+  if (verbose && any(!res$converged)) {
+    warning(sprintf(
+      "%d of %d lambda values hit max_iter = %d without converging; their coefficients are returned but not converged. See the `converged` field.",
+      sum(!res$converged), length(res$converged), as.integer(max_iter)),
+      call. = FALSE)
+  }
+  list(res = res, lambda = lambda)
+}
+
+# the coordinate visiting order is drawn inside the Fortran from a seed taken from
+# R's stream, so set.seed pins a whole fit; the cpmnet.shuffle_seed option pins one
+.cpmnet_shuffle_seed <- function() {
+  s <- getOption("cpmnet.shuffle_seed", NULL)
+  if (!is.null(s)) return(as.integer(s))
+  as.integer(sample.int(.Machine$integer.max, 1L))
 }

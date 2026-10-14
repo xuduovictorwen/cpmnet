@@ -4,7 +4,14 @@
 \alias{predict.cpmnet}
 \title{Predict from a cpmnet fit}
 \usage{
-\method{predict}{cpmnet}(object, newx, type = c("median", "mean"), s = NULL, tol = 1e-10, ...)
+\method{predict}{cpmnet}(
+  object,
+  newx = NULL,
+  type = c("median", "mean", "vars", "groups", "nvars", "ngroups", "norm"),
+  s = NULL,
+  tol = 1e-10,
+  ...
+)
 }
 \arguments{
 \item{object}{fitted \code{"cpmnet"} object.}
@@ -12,7 +19,15 @@
 \item{newx}{predictor matrix for new observations. A numeric vector is
 interpreted as a single observation (1 x p).}
 
-\item{type}{either \code{"median"} (default) or \code{"mean"}.}
+\item{type}{one of \code{"median"} (default) and \code{"mean"}, which
+predict the outcome and need \code{newx}, or one of the structural
+summaries, which describe the fit and need no \code{newx}:
+\code{"vars"} gives the indices of the nonzero coefficients,
+\code{"nvars"} their count, \code{"groups"} the labels of the groups
+holding at least one nonzero coefficient, \code{"ngroups"} their count,
+and \code{"norm"} the length of each group's coefficients. The
+structural names follow \pkg{grpreg} and \pkg{grpnet}. On a fit made
+without \code{group}, every column is its own group.}
 
 \item{s}{optional single lambda value at which to predict. If
 \code{NULL}, predictions are returned for every lambda in

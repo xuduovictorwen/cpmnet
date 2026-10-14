@@ -22,15 +22,21 @@
 #'
 #' @export
 print.cpmnet <- function(x, ...) {
-  family_name <- names(rms::probabilityFamilies)[x$data_prep$link]
-  cat("Call:  cpmnet(x = x, y = y, family = \"", family_name,
-      "\", alpha_en = ", x$alpha_en,
-      ", nlambda = ", length(x$lambda), ")\n\n", sep = "")
+  cat("\nCall: ", deparse(x$call), "\n\n")
 
-  cat(sprintf("%4s %3s %6s %10s\n", "", "Df", "%Dev", "Lambda"))
-  for (i in seq_along(x$lambda)) {
-    cat(sprintf("%3d %3d %6.2f %20.15f\n",
-                i, x$df[i], x$dev.ratio[i] * 100, x$lambda[i]))
+  grouped <- !is.null(x$ngroups)
+  if (grouped) {
+    cat(sprintf("%4s %3s %4s %6s %10s\n", "", "Df", "Grp", "%Dev", "Lambda"))
+    for (i in seq_along(x$lambda)) {
+      cat(sprintf("%3d %3d %4d %6.2f %10.4g\n",
+                  i, x$df[i], x$ngroups[i], x$dev.ratio[i] * 100, x$lambda[i]))
+    }
+  } else {
+    cat(sprintf("%4s %3s %6s %10s\n", "", "Df", "%Dev", "Lambda"))
+    for (i in seq_along(x$lambda)) {
+      cat(sprintf("%3d %3d %6.2f %10.4g\n",
+                  i, x$df[i], x$dev.ratio[i] * 100, x$lambda[i]))
+    }
   }
   invisible(x)
 }

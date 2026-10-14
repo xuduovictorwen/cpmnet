@@ -5,20 +5,21 @@ Authors@R: c(
     person("Xuduo", "Wen", role = c("aut", "cre"),
            email = "wenv@usc.edu"))
 Description: Fits cumulative probability models (CPMs) with elastic net
-    penalization or regularization via block coordinate descent, computed
-    along a full penalization path. Supports k-fold cross-validation for lambda
-    selection under four criteria: the Brier score over a grid of
-    response percentiles (default and recommended), mean and median
-    regression loss, and pinball quantile loss, with probability
-    scoring rules also available. The core fitting loop is implemented
-    in Fortran for speed.
+    penalization (regularization) along a full penalization path by block
+    coordinate descent, with optional grouped penalization so that a
+    categorical predictor is selected or dropped as a unit. Supports k-fold
+    cross-validation for lambda selection under five criteria: the Brier
+    score over a grid of response percentiles (the default), mean and
+    median regression loss, pinball quantile loss, and the held-out
+    log-likelihood, with probability scale residual criteria also
+    available. The core fitting loop is implemented in Fortran.
 Depends: R (>= 3.5.0)
 Imports:
     rms,
-    MASS,
     PAmeasures,
     parallel
 Suggests:
+    MASS,
     testthat (>= 3.0.0)
 Config/testthat/edition: 3
 License: GPL (>= 2)

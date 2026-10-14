@@ -6,13 +6,15 @@
 \title{cpmnet: Penalized Cumulative Probability Models with Elastic Net}
 \description{
 Fits cumulative probability models (CPMs) with elastic net
-penalization (regularization) via coordinate descent, computed along
-a full penalization (regularization) path. Cross-validation is provided for lambda
-selection with five conceptual criteria: mean and median regression
-loss, pinball quantile loss, the Brier score, and the held-out
-log-likelihood; proper scoring rule criteria are also available.
-The core fitting loop is implemented in Fortran for computational
-efficiency.
+penalization (regularization) along a full penalization (regularization)
+path, updating the intercepts together by a damped Newton step and the
+coefficients by coordinate or group descent, with optional grouped
+penalization so that a categorical predictor is selected or dropped as a
+unit. Cross-validation is provided for lambda selection with five
+conceptual criteria: mean and median regression loss, pinball quantile
+loss, the Brier score, and the held-out log-likelihood; probability scale
+residual criteria are also available. The core fitting loop is
+implemented in Fortran.
 }
 \section{Entry points}{
 

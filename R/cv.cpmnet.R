@@ -3,9 +3,11 @@
 #' Performs k-fold cross-validation for a \code{cpmnet} model and selects
 #' lambda according to one of five conceptual criteria: mean, median,
 #' pinball, Brier, or held-out log-likelihood. The default, \code{"brier"},
-#' averages the squared Brier score across a user-specified grid of
-#' response percentiles and is the criterion recommended in the
-#' accompanying methods paper.
+#' averages the Brier score across a user-specified grid of response
+#' percentiles and is the criterion recommended in the accompanying methods
+#' paper. When \code{weights} are passed through \code{...}, each fold is fitted
+#' with its own rows' weights and every held-out criterion except \code{pR2} is
+#' a weighted average over the held-out observations.
 #'
 #' @param x predictor matrix. See \code{\link{cpmnet}} for requirements.
 #' @param y response vector. See \code{\link{cpmnet}}.
@@ -79,11 +81,9 @@ cv.cpmnet <- function(x, y, nfolds = 10, foldid = NULL,
 
   type <- match.arg(type)
 
-  # dimensional baseline
   if (is.vector(x) && !is.matrix(x)) x <- as.matrix(x)
   n <- length(y)
 
-  # nfolds
   if (!is.numeric(nfolds) || length(nfolds) != 1L ||
       !is.finite(nfolds) || nfolds != as.integer(nfolds)) {
     stop("nfolds must be a single integer; got ", deparse(nfolds),
@@ -96,7 +96,6 @@ cv.cpmnet <- function(x, y, nfolds = 10, foldid = NULL,
     stop("nfolds = ", nfolds, " exceeds n = ", n, call. = FALSE)
   }
 
-  # foldid
   if (is.null(foldid)) {
     foldid <- sample(rep(seq(nfolds), length.out = n))
   } else {
@@ -115,7 +114,6 @@ cv.cpmnet <- function(x, y, nfolds = 10, foldid = NULL,
     }
   }
 
-  # ncores
   if (!is.null(ncores)) {
     if (!is.numeric(ncores) || length(ncores) != 1L ||
         !is.finite(ncores) || ncores != as.integer(ncores) || ncores < 1L) {
@@ -124,13 +122,11 @@ cv.cpmnet <- function(x, y, nfolds = 10, foldid = NULL,
     }
   }
 
-  # parallel
   if (!is.logical(parallel) || length(parallel) != 1L || is.na(parallel)) {
     stop("parallel must be a single TRUE/FALSE; got ", deparse(parallel),
          call. = FALSE)
   }
 
-  # probability grids and weights
   tau_weights <- .check_prob_grid(tau_levels, tau_weights,
                                   "tau_levels", "tau_weights")
   n_tau <- length(tau_levels)
@@ -139,13 +135,25 @@ cv.cpmnet <- function(x, y, nfolds = 10, foldid = NULL,
   n_brier <- length(brier_probs)
 
   dots <- list(...)
+  wts <- dots$weights
+  if (!is.null(wts) && length(wts) != n) {
+    stop("length(weights) = ", length(wts), " must equal length(y) = ", n,
+         call. = FALSE)
+  }
+  # a weighted average when weights are given, the plain mean otherwise
+  wmean <- if (is.null(wts)) function(v, w) mean(v) else function(v, w) sum(w * v) / sum(w)
   fit_full <- do.call(cpmnet, c(list(x = x, y = y), dots))
   lambda_path <- fit_full$lambda
   nlambda <- length(lambda_path)
-  # brier thresholds before splitting
   brier_cuts <- as.numeric(quantile(y, probs = brier_probs))
 
+  # one visiting order seed per fold, drawn in the parent, since mclapply reseeds
+  # each forked child
+  fold_shuffle_seed <- sample.int(.Machine$integer.max, max(foldid))
+
   process_fold <- function(fold) {
+    old_seed <- options(cpmnet.shuffle_seed = fold_shuffle_seed[fold])
+    on.exit(options(old_seed), add = TRUE)
     val_idx <- which(foldid == fold)
     train_idx <- which(foldid != fold)
     n_val <- length(val_idx)
@@ -153,19 +161,27 @@ cv.cpmnet <- function(x, y, nfolds = 10, foldid = NULL,
     y_train <- y[train_idx]
     x_val <- x[val_idx, , drop = FALSE]
     y_val <- y[val_idx]
-    # fold fits are silent
+    w_val <- if (is.null(wts)) NULL else wts[val_idx]
+    # fold fits are silent and reuse the full fit's null deviance, which feeds only
+    # dev.ratio
     fold_args <- c(list(x = x_train, y = y_train, lambda = lambda_path), dots)
+    if (!is.null(wts)) fold_args$weights <- wts[train_idx]
     if (is.null(fold_args$verbose)) fold_args$verbose <- FALSE
+    if (is.null(fold_args$nulldev)) fold_args$nulldev <- fit_full$nulldev
     fit_fold <- do.call(cpmnet, fold_args)
     nlambda_fold <- length(fit_fold$lambda)
     if (type %in% c("mean", "median")) {
-      # returns n_val x nlambda_fold
       pred <- predict.cpmnet(fit_fold, newx = x_val, type = type, s = NULL)
       mae <- rep(NA_real_, nlambda)
       mse <- rep(NA_real_, nlambda)
       pR2 <- rep(NA_real_, nlambda)
-      mae[1:nlambda_fold] <- colMeans(abs(pred - y_val))
-      mse[1:nlambda_fold] <- colMeans((pred - y_val)^2)
+      if (is.null(wts)) {
+        mae[1:nlambda_fold] <- colMeans(abs(pred - y_val))
+        mse[1:nlambda_fold] <- colMeans((pred - y_val)^2)
+      } else {
+        mae[1:nlambda_fold] <- colSums(w_val * abs(pred - y_val)) / sum(w_val)
+        mse[1:nlambda_fold] <- colSums(w_val * (pred - y_val)^2) / sum(w_val)
+      }
       if (type == "mean") {
         for (j in 1:nlambda_fold) {
           yhat <- pred[, j]
@@ -185,9 +201,9 @@ cv.cpmnet <- function(x, y, nfolds = 10, foldid = NULL,
           qhat <- qpred[, j, t]
           resid <- y_val - qhat
           if (type == "pinball_abs") {
-            pb_tau[t] <- mean(ifelse(resid >= 0, tau * abs(resid), (1 - tau) * abs(resid)))
+            pb_tau[t] <- wmean(ifelse(resid >= 0, tau * abs(resid), (1 - tau) * abs(resid)), w_val)
           } else {
-            pb_tau[t] <- mean(ifelse(resid >= 0, tau * resid^2, (1 - tau) * resid^2))
+            pb_tau[t] <- wmean(ifelse(resid >= 0, tau * resid^2, (1 - tau) * resid^2), w_val)
           }
         }
         pinball[j] <- sum(tau_weights * pb_tau)
@@ -202,7 +218,7 @@ cv.cpmnet <- function(x, y, nfolds = 10, foldid = NULL,
         for (t in 1:n_brier) {
           fhat <- cdf_pred[, j, t]
           indicator <- as.numeric(y_val <= brier_cuts[t])
-          bs_c[t] <- mean((fhat - indicator)^2)
+          bs_c[t] <- wmean((fhat - indicator)^2, w_val)
         }
         brier[j] <- sum(brier_weights * bs_c)
       }
@@ -212,41 +228,43 @@ cv.cpmnet <- function(x, y, nfolds = 10, foldid = NULL,
                                          y_test = y_val, s = NULL)
       negll <- rep(NA_real_, nlambda)
       for (j in 1:nlambda_fold) {
-        negll[j] <- -mean(log(pmax(mass[, j], 1e-12)))
+        negll[j] <- -wmean(log(pmax(mass[, j], 1e-12)), w_val)
       }
       list(negll = negll)
     } else {
-      # psr_abs or psr_sq
       cdf_vals <- predict_psr_cpmnet(fit_fold, newx = x_val,
                                       y_test = y_val, s = NULL)
       psr <- rep(NA_real_, nlambda)
       for (j in 1:nlambda_fold) {
         psr_vals <- 2.0 * cdf_vals[, j] - 1.0
         if (type == "psr_abs") {
-          psr[j] <- mean(abs(psr_vals))
+          psr[j] <- wmean(abs(psr_vals), w_val)
         } else {
-          psr[j] <- mean(psr_vals^2)
+          psr[j] <- wmean(psr_vals^2, w_val)
         }
       }
       list(psr = psr)
     }
   }
+  # a failed fold is left out with a warning, in parallel and in sequence alike
+  safe_fold <- function(fold) tryCatch(process_fold(fold), error = function(e)
+    structure(conditionMessage(e), class = "try-error"))
   max_fold <- max(foldid)
   if (parallel && max_fold > 1 && .Platform$OS.type != "windows") {
     if (is.null(ncores)) ncores <- min(max_fold, parallel::detectCores() - 1)
-    fold_results <- parallel::mclapply(seq(max_fold), process_fold, mc.cores = ncores)
+    fold_results <- parallel::mclapply(seq(max_fold), safe_fold, mc.cores = ncores)
   } else {
     if (parallel && .Platform$OS.type == "windows") {
       warning("Parallel processing not supported on Windows. Running sequentially.",
               call. = FALSE)
     }
-    fold_results <- lapply(seq(max_fold), process_fold)
+    fold_results <- lapply(seq(max_fold), safe_fold)
   }
   has_error <- sapply(fold_results, inherits, "try-error")
   if (any(has_error)) {
     n_failed <- sum(has_error)
-    warning(paste(n_failed, "fold(s) failed during parallel execution."),
-            call. = FALSE)
+    warning(n_failed, " fold(s) failed and were left out: ",
+            as.character(fold_results[has_error][[1]]), call. = FALSE)
     fold_results <- fold_results[!has_error]
   }
   if (length(fold_results) == 0) stop("All folds failed.", call. = FALSE)
@@ -284,7 +302,6 @@ cv.cpmnet <- function(x, y, nfolds = 10, foldid = NULL,
       class = "cv.cpmnet"
     )
   } else {
-    # single criterion types
     slot <- switch(type,
                    pinball_abs = "pinball", pinball_sq = "pinball",
                    brier = "brier", loglik = "negll", "psr")

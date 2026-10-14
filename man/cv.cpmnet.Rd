@@ -83,9 +83,11 @@ An object of class \code{"cv.cpmnet"}. Structure depends on
 Performs k-fold cross-validation for a \code{cpmnet} model and selects
 lambda according to one of five conceptual criteria: mean, median,
 pinball, Brier, or held-out log-likelihood. The default, \code{"brier"},
-averages the squared Brier score across a user-specified grid of
-response percentiles and is the criterion recommended in the
-accompanying methods paper.
+averages the Brier score across a user-specified grid of response
+percentiles and is the criterion recommended in the accompanying methods
+paper. When \code{weights} are passed through \code{...}, each fold is fitted
+with its own rows' weights and every held-out criterion except \code{pR2} is
+a weighted average over the held-out observations.
 }
 \examples{
 \donttest{

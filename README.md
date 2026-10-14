@@ -10,10 +10,23 @@ quantile loss, the Brier score over a percentile grid, or the held-out
 log-likelihood. The Brier variant is the default and is the criterion
 recommended in the accompanying methods paper.
 
+## The coordinate visiting order
+
+Each cycle of the coordinate descent visits the coefficients in a fresh random
+order, drawn inside the Fortran core by a Fisher-Yates shuffle. A fixed cyclic
+order gives the first column a standing advantage, since it is always updated
+first against the newest residual, and redrawing the order every cycle removes
+that.
+
+The seed comes from R's own stream, so `set.seed` pins a whole fit the way it
+already pins the cross-validation folds. `options(cpmnet.shuffle_seed = k)` pins one
+fit to the order `k` gives without drawing from the stream, which is what the
+package's own tests use where two fits have to be compared.
+
 ## Installation
 
 `cpmnet` depends on `rms` (for `orm.fit` and `probabilityFamilies`),
-`MASS`, `PAmeasures`, and `parallel`. A Fortran compiler is required
+`PAmeasures`, and `parallel`; `MASS` is used by the tests only. A Fortran compiler is required
 at install time (macOS: `brew install gcc`; Debian/Ubuntu:
 `apt install gfortran`; Windows: included in `Rtools`).
 
@@ -95,7 +108,7 @@ predict(cvfit$cpmnet.fit, newx = x[1:5, ],
 `cv.cpmnet(type = ...)` supports five `type` of conceptual
 criteria emphasized in the methods paper:
 
-- `"brier"` (default): squared Brier score averaged over response
+- `"brier"` (default): Brier score averaged over response
   percentiles (deciles by default). Returns `lambda.min`, `lambda.1se`.
 - `"mean"`, `"median"`: regression loss on predicted mean or median.
   Returns `lambda.min.mae`, `lambda.1se.mae`, `lambda.min.mse`,

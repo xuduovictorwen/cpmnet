@@ -8,6 +8,8 @@
 #' @param xvar x-axis variable. One of \code{"lambda"} (log-lambda),
 #'   \code{"norm"} (L1 norm of the slope vector), or \code{"dev"}
 #'   (fraction deviance explained).
+#' @param group_norm if \code{TRUE}, plot one line per group, the length of
+#'   that group's coefficients, instead of one line per column.
 #' @param label if \code{TRUE}, label nonzero coefficients at the
 #'   rightmost point with their predictor index.
 #' @param ... passed to \code{\link[graphics]{plot}}.
@@ -27,9 +29,14 @@
 #'
 #' @export
 plot.cpmnet <- function(x, xvar = c("lambda", "norm", "dev"),
-                        label = FALSE, ...) {
+                        label = FALSE, group_norm = FALSE, ...) {
 
   xvar <- match.arg(xvar)
+  # one line per group
+  if (group_norm) {
+    gn <- cpmnet_structure(x, "norm", NULL)
+    x <- utils::modifyList(x, list(beta = gn))
+  }
   beta <- x$beta
   lambda <- x$lambda
   df <- x$df

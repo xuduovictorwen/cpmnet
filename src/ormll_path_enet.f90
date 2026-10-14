@@ -1,28 +1,19 @@
-! elastic net CPM path fit
+! elastic net CPM path, one coefficient at a time
 ! build without -ffast-math or -march=native
 
 subroutine ormll_path_enet(n, k, p, x, y, wt, link, &
                            nlambda, lambda_path, alpha_en, &
-                           penalty_factor , &
+                           penalty_factor, &
                            alpha_init, beta_init, &
                            max_iter_outer, tol, &
                            alpha_mat, beta_mat, logL_vec, &
-                           converged_vec, niter_vec, salloc)
+                           converged_vec, niter_vec, salloc, shuffle_seed)
 
+use cpm_links
 use, intrinsic :: ISO_FORTRAN_ENV, only: dp => real64, int32
 implicit none
 
-! constants
-real(dp), parameter :: PI = 3.14159265358979323846_dp
-real(dp), parameter :: SQRT2 = 1.41421356237309504880_dp
-real(dp), parameter :: INV_SQRT2 = 0.70710678118654752440_dp
-real(dp), parameter :: INV_SQRT2PI = 0.39894228040143267794_dp
-real(dp), parameter :: INV_PI = 0.31830988618379067154_dp
-
-integer(int32), parameter :: MAX_HALVING = 30   ! line search step halvings
-real(dp), parameter :: PIVOT_EPS = 1.0e-14_dp
-
-integer(int32), intent(in) :: n, k, p, nlambda, link, max_iter_outer
+integer(int32), intent(in) :: n, k, p, nlambda, link, max_iter_outer, shuffle_seed
 integer(int32), intent(in) :: y(n)
 real(dp), intent(in) :: x(n, p), wt(n), lambda_path(nlambda), alpha_en, tol
 real(dp), intent(in) :: penalty_factor(p)
@@ -33,6 +24,9 @@ logical, intent(out) :: converged_vec(nlambda)
 integer(int32), intent(out) :: niter_vec(nlambda), salloc
 
 integer(int32) :: i_lambda, iter, i, j, l, tri_status, ls
+integer(int32) :: m, jj, itmp, nseed
+integer(int32), allocatable :: ord(:), seedv(:)
+real(dp) :: u
 logical :: accepted, dpos
 real(dp) :: lambda, lambda1, lambda2, max_change, beta_old, s, w, z, z_j
 real(dp) :: inv_n, inv_d, inv_d2, dev_old, dev_new, step_t
@@ -40,25 +34,30 @@ real(dp) :: inv_n, inv_d, inv_d2, dev_old, dev_new, step_t
 real(dp), allocatable :: alpha_curr(:), beta_curr(:), alpha_prev(:), beta_prev(:)
 real(dp), allocatable :: lp(:), d(:), pdf1(:), pdf2(:), dpdf1(:), dpdf2(:)
 real(dp), allocatable :: grad_alpha(:), hess_diag(:), hess_offdiag(:), alpha_step(:)
-real(dp), allocatable :: eta1(:), eta2(:)  ! Precomputed eta values
 
 allocate(alpha_curr(k), beta_curr(p), alpha_prev(k), beta_prev(p), &
          lp(n), d(n), pdf1(n), pdf2(n), dpdf1(n), dpdf2(n), &
-         grad_alpha(k), hess_diag(k), hess_offdiag(k-1), alpha_step(k), &
-         eta1(n), eta2(n), stat=salloc)
+         grad_alpha(k), hess_diag(k), hess_offdiag(max(k-1,1)), alpha_step(k), &
+         ord(p), stat=salloc)
 if (salloc /= 0) return
+
+! visiting order, redrawn every cycle
+call random_seed(size = nseed)
+allocate(seedv(nseed))
+seedv = shuffle_seed + 37 * [(i, i = 0, nseed - 1)]
+call random_seed(put = seedv)
+ord = [(l, l = 1, p)]
 
 alpha_curr = alpha_init
 beta_curr = beta_init
 inv_n = 1.0_dp / real(n, dp)
 
-do i_lambda = 1, nlambda
+lambdas: do i_lambda = 1, nlambda
 
     lambda = lambda_path(i_lambda)
     lambda1 = lambda * alpha_en
     lambda2 = lambda * (1.0_dp - alpha_en)
 
-    ! initial linear predictor
     lp = 0.0_dp
     do l = 1, p
         if (beta_curr(l) /= 0.0_dp) then
@@ -75,10 +74,9 @@ do i_lambda = 1, nlambda
         alpha_prev = alpha_curr
         beta_prev = beta_curr
 
+        call compute_probs(n, k, alpha_curr, lp, y, link, d, pdf1, pdf2, dpdf1, dpdf2)
 
-        call compute_probs_fast(n, k, alpha_curr, lp, y, link, d, pdf1, pdf2, dpdf1, dpdf2, eta1, eta2)
-
-        ! alpha gradient
+        ! intercept gradient and tridiagonal hessian
         grad_alpha = 0.0_dp
         do i = 1, n
             j = y(i)
@@ -93,7 +91,6 @@ do i_lambda = 1, nlambda
             end if
         end do
 
-        ! alpha Hessian
         hess_diag = 0.0_dp
         hess_offdiag = 0.0_dp
         do i = 1, n
@@ -114,14 +111,12 @@ do i_lambda = 1, nlambda
 
         call solve_tridiag(k, hess_diag, hess_offdiag, grad_alpha, alpha_step, tri_status)
         if (tri_status /= 0) then
-            salloc = 1000 + tri_status  ! singular Hessian, surface to R
-            deallocate(alpha_curr, beta_curr, alpha_prev, beta_prev, &
-                       lp, d, pdf1, pdf2, dpdf1, dpdf2, &
-                       grad_alpha, hess_diag, hess_offdiag, alpha_step, eta1, eta2)
-            return
+            ! singular hessian: keep the lambdas already fitted
+            salloc = 1000 + tri_status
+            niter_vec(i_lambda) = -1
+            exit lambdas
         end if
 
-        ! d is at alpha_prev
         dev_old = 0.0_dp
         do i = 1, n
             if (d(i) <= 0.0_dp) then
@@ -131,12 +126,12 @@ do i_lambda = 1, nlambda
             dev_old = dev_old - wt(i) * log(d(i))
         end do
 
-        ! damped Newton step
+        ! damped newton step
         step_t = 1.0_dp
         accepted = .false.
         do ls = 1, MAX_HALVING
             alpha_curr = alpha_prev - step_t * alpha_step
-            call compute_probs_fast(n, k, alpha_curr, lp, y, link, d, pdf1, pdf2, dpdf1, dpdf2, eta1, eta2)
+            call compute_probs(n, k, alpha_curr, lp, y, link, d, pdf1, pdf2, dpdf1, dpdf2)
             dpos = .true.
             do i = 1, n
                 if (d(i) <= 0.0_dp) then
@@ -158,15 +153,19 @@ do i_lambda = 1, nlambda
         end do
 
         if (.not. accepted) then
-            ! no improving step
             alpha_curr = alpha_prev
-            call compute_probs_fast(n, k, alpha_curr, lp, y, link, d, pdf1, pdf2, dpdf1, dpdf2, eta1, eta2)
+            call compute_probs(n, k, alpha_curr, lp, y, link, d, pdf1, pdf2, dpdf1, dpdf2)
         end if
 
-        ! beta coordinate descent
-        do l = 1, p
+        ! coefficients, in a fisher-yates shuffled order
+        do m = p, 2, -1
+            call random_number(u)
+            jj = 1 + int(u * real(m, dp))
+            itmp = ord(m); ord(m) = ord(jj); ord(jj) = itmp
+        end do
+        do m = 1, p
+            l = ord(m)
             beta_old = beta_curr(l)
-
 
             z_j = 0.0_dp
             w = 0.0_dp
@@ -174,7 +173,6 @@ do i_lambda = 1, nlambda
                 j = y(i)
                 inv_d = 1.0_dp / d(i)
                 inv_d2 = inv_d * inv_d
-
                 if (j == 0) then
                     z_j = z_j + wt(i) * pdf1(i) * x(i, l) * inv_d
                     z = pdf1(i) * pdf1(i) + d(i) * dpdf1(i)
@@ -190,7 +188,6 @@ do i_lambda = 1, nlambda
             z_j = z_j * inv_n
             w = w * inv_n
 
-
             z = w * beta_old - z_j
             if (abs(z) <= lambda1 * penalty_factor(l)) then
                 beta_curr(l) = 0.0_dp
@@ -198,16 +195,14 @@ do i_lambda = 1, nlambda
                 beta_curr(l) = sign(1.0_dp, z) * (abs(z) - lambda1 * penalty_factor(l)) / (w + lambda2 * penalty_factor(l))
             end if
 
-
             s = beta_curr(l) - beta_old
             if (s /= 0.0_dp) then
                 do i = 1, n
                     lp(i) = lp(i) + x(i, l) * s
                 end do
-                call compute_probs_fast(n, k, alpha_curr, lp, y, link, d, pdf1, pdf2, dpdf1, dpdf2, eta1, eta2)
+                call compute_probs(n, k, alpha_curr, lp, y, link, d, pdf1, pdf2, dpdf1, dpdf2)
             end if
         end do
-
 
         max_change = 0.0_dp
         do j = 1, k
@@ -233,8 +228,7 @@ do i_lambda = 1, nlambda
 
     end do
 
-
-    call compute_probs_fast(n, k, alpha_curr, lp, y, link, d, pdf1, pdf2, dpdf1, dpdf2, eta1, eta2)
+    call compute_probs(n, k, alpha_curr, lp, y, link, d, pdf1, pdf2, dpdf1, dpdf2)
     logL_vec(i_lambda) = 0.0_dp
     do i = 1, n
         logL_vec(i_lambda) = logL_vec(i_lambda) + wt(i) * log(d(i))
@@ -244,232 +238,6 @@ do i_lambda = 1, nlambda
     alpha_mat(:, i_lambda) = alpha_curr
     beta_mat(:, i_lambda) = beta_curr
 
-end do
-
-deallocate(alpha_curr, beta_curr, alpha_prev, beta_prev, &
-           lp, d, pdf1, pdf2, dpdf1, dpdf2, &
-           grad_alpha, hess_diag, hess_offdiag, alpha_step, eta1, eta2)
-
-return
-
-contains
-
-! CDF, PDF, dPDF in one pass
-subroutine compute_probs_fast(nn, kk, alpha, lp, yy, link_type, dd, pdf1, pdf2, dpdf1, dpdf2, eta1, eta2)
-    integer(int32), intent(in) :: nn, kk, link_type
-    integer(int32), intent(in) :: yy(nn)
-    real(dp), intent(in) :: alpha(kk), lp(nn)
-    real(dp), intent(out) :: dd(nn), pdf1(nn), pdf2(nn), dpdf1(nn), dpdf2(nn)
-    real(dp), intent(out) :: eta1(nn), eta2(nn)  ! Workspace for eta values
-
-    integer(int32) :: ii, jj
-    real(dp) :: cdf1, cdf2, e1, e2, t1, t2
-
-
-    do ii = 1, nn
-        jj = yy(ii)
-        if (jj == 0) then
-            eta1(ii) = alpha(1) + lp(ii)
-        else if (jj == kk) then
-            eta1(ii) = alpha(kk) + lp(ii)
-        else
-            eta1(ii) = alpha(jj)   + lp(ii)
-            eta2(ii) = alpha(jj+1) + lp(ii)
-        end if
-    end do
-
-
-    select case(link_type)
-
-    case(1)  ! Logistic
-        do ii = 1, nn
-            jj = yy(ii)
-            if (jj == 0) then
-                e1 = exp(-eta1(ii))
-                cdf1 = 1.0_dp / (1.0_dp + e1)
-                dd(ii) = 1.0_dp - cdf1
-                pdf1(ii) = cdf1 * dd(ii)
-                dpdf1(ii) = pdf1(ii) * (1.0_dp - 2.0_dp * cdf1)
-                pdf2(ii) = 0.0_dp
-                dpdf2(ii) = 0.0_dp
-            else if (jj == kk) then
-                e1 = exp(-eta1(ii))
-                cdf1 = 1.0_dp / (1.0_dp + e1)
-                dd(ii) = cdf1
-                pdf1(ii) = cdf1 * (1.0_dp - cdf1)
-                dpdf1(ii) = pdf1(ii) * (1.0_dp - 2.0_dp * cdf1)
-                pdf2(ii) = 0.0_dp
-                dpdf2(ii) = 0.0_dp
-            else
-                e1 = exp(-eta1(ii))
-                e2 = exp(-eta2(ii))
-                cdf1 = 1.0_dp / (1.0_dp + e1)
-                cdf2 = 1.0_dp / (1.0_dp + e2)
-                dd(ii) = cdf1 - cdf2
-                pdf1(ii) = cdf1 * (1.0_dp - cdf1)
-                pdf2(ii) = cdf2 * (1.0_dp - cdf2)
-                dpdf1(ii) = pdf1(ii) * (1.0_dp - 2.0_dp * cdf1)
-                dpdf2(ii) = pdf2(ii) * (1.0_dp - 2.0_dp * cdf2)
-            end if
-        end do
-
-    case(2)  ! Probit
-        do ii = 1, nn
-            jj = yy(ii)
-            if (jj == 0) then
-                cdf1 = 0.5_dp * (1.0_dp + erf(eta1(ii) * INV_SQRT2))
-                dd(ii) = 1.0_dp - cdf1
-                pdf1(ii) = INV_SQRT2PI * exp(-0.5_dp * eta1(ii) * eta1(ii))
-                dpdf1(ii) = -pdf1(ii) * eta1(ii)
-                pdf2(ii) = 0.0_dp
-                dpdf2(ii) = 0.0_dp
-            else if (jj == kk) then
-                cdf1 = 0.5_dp * (1.0_dp + erf(eta1(ii) * INV_SQRT2))
-                dd(ii) = cdf1
-                pdf1(ii) = INV_SQRT2PI * exp(-0.5_dp * eta1(ii) * eta1(ii))
-                dpdf1(ii) = -pdf1(ii) * eta1(ii)
-                pdf2(ii) = 0.0_dp
-                dpdf2(ii) = 0.0_dp
-            else
-                cdf1 = 0.5_dp * (1.0_dp + erf(eta1(ii) * INV_SQRT2))
-                cdf2 = 0.5_dp * (1.0_dp + erf(eta2(ii) * INV_SQRT2))
-                dd(ii) = cdf1 - cdf2
-                pdf1(ii) = INV_SQRT2PI * exp(-0.5_dp * eta1(ii) * eta1(ii))
-                pdf2(ii) = INV_SQRT2PI * exp(-0.5_dp * eta2(ii) * eta2(ii))
-                dpdf1(ii) = -pdf1(ii) * eta1(ii)
-                dpdf2(ii) = -pdf2(ii) * eta2(ii)
-            end if
-        end do
-
-    case(3)  ! Log-log
-        do ii = 1, nn
-            jj = yy(ii)
-            if (jj == 0) then
-                e1 = exp(-eta1(ii))
-                cdf1 = exp(-e1)
-                dd(ii) = 1.0_dp - cdf1
-                pdf1(ii) = e1 * cdf1
-                dpdf1(ii) = pdf1(ii) * (-1.0_dp + e1)
-                pdf2(ii) = 0.0_dp
-                dpdf2(ii) = 0.0_dp
-            else if (jj == kk) then
-                e1 = exp(-eta1(ii))
-                cdf1 = exp(-e1)
-                dd(ii) = cdf1
-                pdf1(ii) = e1 * cdf1
-                dpdf1(ii) = pdf1(ii) * (-1.0_dp + e1)
-                pdf2(ii) = 0.0_dp
-                dpdf2(ii) = 0.0_dp
-            else
-                e1 = exp(-eta1(ii))
-                e2 = exp(-eta2(ii))
-                cdf1 = exp(-e1)
-                cdf2 = exp(-e2)
-                dd(ii) = cdf1 - cdf2
-                pdf1(ii) = e1 * cdf1
-                pdf2(ii) = e2 * cdf2
-                dpdf1(ii) = pdf1(ii) * (-1.0_dp + e1)
-                dpdf2(ii) = pdf2(ii) * (-1.0_dp + e2)
-            end if
-        end do
-
-    case(4)  ! Complementary log-log
-        do ii = 1, nn
-            jj = yy(ii)
-            if (jj == 0) then
-                e1 = exp(eta1(ii))
-                cdf1 = 1.0_dp - exp(-e1)
-                dd(ii) = 1.0_dp - cdf1
-                pdf1(ii) = e1 * exp(-e1)
-                dpdf1(ii) = pdf1(ii) * (1.0_dp - e1)
-                pdf2(ii) = 0.0_dp
-                dpdf2(ii) = 0.0_dp
-            else if (jj == kk) then
-                e1 = exp(eta1(ii))
-                cdf1 = 1.0_dp - exp(-e1)
-                dd(ii) = cdf1
-                pdf1(ii) = e1 * exp(-e1)
-                dpdf1(ii) = pdf1(ii) * (1.0_dp - e1)
-                pdf2(ii) = 0.0_dp
-                dpdf2(ii) = 0.0_dp
-            else
-                e1 = exp(eta1(ii))
-                e2 = exp(eta2(ii))
-                cdf1 = 1.0_dp - exp(-e1)
-                cdf2 = 1.0_dp - exp(-e2)
-                dd(ii) = cdf1 - cdf2
-                pdf1(ii) = e1 * exp(-e1)
-                pdf2(ii) = e2 * exp(-e2)
-                dpdf1(ii) = pdf1(ii) * (1.0_dp - e1)
-                dpdf2(ii) = pdf2(ii) * (1.0_dp - e2)
-            end if
-        end do
-
-    case(5)  ! Cauchit
-        do ii = 1, nn
-            jj = yy(ii)
-            if (jj == 0) then
-                t1 = 1.0_dp + eta1(ii) * eta1(ii)
-                cdf1 = INV_PI * atan(eta1(ii)) + 0.5_dp
-                dd(ii) = 1.0_dp - cdf1
-                pdf1(ii) = INV_PI / t1
-                dpdf1(ii) = -2.0_dp * eta1(ii) * INV_PI / (t1 * t1)
-                pdf2(ii) = 0.0_dp
-                dpdf2(ii) = 0.0_dp
-            else if (jj == kk) then
-                t1 = 1.0_dp + eta1(ii) * eta1(ii)
-                cdf1 = INV_PI * atan(eta1(ii)) + 0.5_dp
-                dd(ii) = cdf1
-                pdf1(ii) = INV_PI / t1
-                dpdf1(ii) = -2.0_dp * eta1(ii) * INV_PI / (t1 * t1)
-                pdf2(ii) = 0.0_dp
-                dpdf2(ii) = 0.0_dp
-            else
-                t1 = 1.0_dp + eta1(ii) * eta1(ii)
-                t2 = 1.0_dp + eta2(ii) * eta2(ii)
-                cdf1 = INV_PI * atan(eta1(ii)) + 0.5_dp
-                cdf2 = INV_PI * atan(eta2(ii)) + 0.5_dp
-                dd(ii) = cdf1 - cdf2
-                pdf1(ii) = INV_PI / t1
-                pdf2(ii) = INV_PI / t2
-                dpdf1(ii) = -2.0_dp * eta1(ii) * INV_PI / (t1 * t1)
-                dpdf2(ii) = -2.0_dp * eta2(ii) * INV_PI / (t2 * t2)
-            end if
-        end do
-
-    end select
-
-end subroutine compute_probs_fast
-
-subroutine solve_tridiag(nn, diag, offdiag, rhs, solution, status)
-    integer(int32), intent(in) :: nn
-    real(dp), intent(in) :: diag(nn), offdiag(nn-1), rhs(nn)
-    real(dp), intent(out) :: solution(nn)
-    integer(int32), intent(out) :: status
-    real(dp) :: work_diag(nn), work_rhs(nn), m
-    integer(int32) :: ii
-
-    status = 0
-    work_diag(1) = diag(1)
-    work_rhs(1) = rhs(1)
-    if (abs(work_diag(1)) < PIVOT_EPS) then
-        status = 1
-        return
-    end if
-    do ii = 2, nn
-        m = offdiag(ii-1) / work_diag(ii-1)
-        work_diag(ii) = diag(ii) - m * offdiag(ii-1)
-        if (abs(work_diag(ii)) < PIVOT_EPS) then
-            status = ii
-            return
-        end if
-        work_rhs(ii) = rhs(ii) - m * work_rhs(ii-1)
-    end do
-
-    solution(nn) = work_rhs(nn) / work_diag(nn)
-    do ii = nn-1, 1, -1
-        solution(ii) = (work_rhs(ii) - offdiag(ii) * solution(ii+1)) / work_diag(ii)
-    end do
-end subroutine solve_tridiag
+end do lambdas
 
 end subroutine ormll_path_enet

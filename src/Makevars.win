@@ -1,4 +1,8 @@
-## Windows compile flags. Same rationale as src/Makevars:
-## no machine-specific or IEEE-violating flags.
-
+## no machine-specific or IEEE-violating flags (no -march=native, no -ffast-math)
 PKG_FFLAGS = -O2
+
+all: $(SHLIB)
+
+## the shared module compiles first
+cpm_predict.o cpm_predict_cdf.o cpm_predict_psr.o cpm_predict_quantile.o \
+cpm_lambda_max.o ormll_path_enet.o cpmnet2_group.o: cpm_links.o
